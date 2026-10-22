@@ -73,6 +73,56 @@ def test_fetch_youtube_music_playlist_requests_all_tracks(monkeypatch):
 	assert source.warning is None
 
 
+def test_video_repeated_in_the_playlist_keeps_both_entries_and_the_read_is_complete(monkeypatch):
+	class _YTMusic:
+		def get_playlist(self, playlist_id, limit=None):
+			song = {"videoId": "same", "title": "Song", "artists": [{"name": "Artist"}]}
+			other = {"videoId": "other", "title": "Other", "artists": [{"name": "Artist"}], "setVideoId": "S2"}
+			return {
+				"title": "Repeats",
+				"trackCount": 3,
+				# The page repeated on a continuation carries the same setVideoId: that one is not a new entry.
+				"tracks": [dict(song, setVideoId="S1"), other, dict(song, setVideoId="S3"), dict(other)],
+			}
+
+	monkeypatch.setattr(youtube_music_import, "YTMusic", _YTMusic)
+
+	source = fetch_youtube_music_source("https://music.youtube.com/playlist?list=PLabc123")
+
+	assert [track["youtube_video_id"] for track in source.tracks] == ["same", "other", "same"]
+	assert source.warning is None
+
+
+def test_anonymous_read_without_entry_ids_keeps_a_repeated_video(monkeypatch):
+	class _YTMusic:
+		def get_playlist(self, playlist_id, limit=None):
+			song = {"videoId": "same", "title": "Song", "artists": [{"name": "Artist"}]}
+			other = {"videoId": "other", "title": "Other", "artists": [{"name": "Artist"}]}
+			return {"title": "Repeats", "trackCount": 3, "tracks": [song, other, dict(song)]}
+
+	monkeypatch.setattr(youtube_music_import, "YTMusic", _YTMusic)
+
+	source = fetch_youtube_music_source("https://music.youtube.com/playlist?list=PLabc123")
+
+	assert [track["youtube_video_id"] for track in source.tracks] == ["same", "other", "same"]
+	assert source.warning is None
+
+
+def test_overlapping_pages_without_entry_ids_are_collapsed(monkeypatch):
+	class _YTMusic:
+		def get_playlist(self, playlist_id, limit=None):
+			song = {"videoId": "same", "title": "Song", "artists": [{"name": "Artist"}]}
+			other = {"videoId": "other", "title": "Other", "artists": [{"name": "Artist"}]}
+			return {"title": "Overlap", "trackCount": 2, "tracks": [song, other, dict(other)]}
+
+	monkeypatch.setattr(youtube_music_import, "YTMusic", _YTMusic)
+
+	source = fetch_youtube_music_source("https://music.youtube.com/playlist?list=PLabc123")
+
+	assert [track["youtube_video_id"] for track in source.tracks] == ["same", "other"]
+	assert source.warning is None
+
+
 def test_fetch_youtube_music_warns_when_partial(monkeypatch):
 	class _YTMusic:
 		def get_playlist(self, playlist_id, limit=None):
