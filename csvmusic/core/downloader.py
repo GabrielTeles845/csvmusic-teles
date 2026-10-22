@@ -1138,6 +1138,10 @@ def write_m3u(out_dir: pathlib.Path, playlist_name: str, tracks_done: List[Dict]
 				width = max(2, int(t.get("filename_prefix_width") or 2))
 				base = f"{int(t['filename_prefix_number']):0{width}d}- {base}"
 			media_path = media_dir / f"{_safe(base)}.{ext}"
+			stored = str(t.get("downloaded_path") or "").strip()
+			if stored and not media_path.exists() and pathlib.Path(stored).is_file():
+				# The song's file kept an older name (position changed, no prefix): list the real file.
+				media_path = pathlib.Path(stored)
 			try:
 				rel = pathlib.Path(os.path.relpath(media_path.resolve(), playlist_dir.resolve()))
 			except ValueError:

@@ -770,12 +770,10 @@ def write_library_m3us(
 	"""Write each playlist's M3U with the songs whose file already exists (used during a download, not only at the end)."""
 	root = pathlib.Path(output_dir)
 	by_playlist: dict[str, list[dict]] = {}
-	for track in manifest_tracks:
-		name = str(track.get("playlist") or "Playlist")
+	for name, entry in m3u_ready_tracks(manifest_tracks, root, fmt):
 		if playlist_names is not None and name not in playlist_names:
 			continue
-		if expected_track_path(track, root, fmt).exists():
-			by_playlist.setdefault(name, []).append(track)
+		by_playlist.setdefault(name, []).append(entry)
 	written: list[pathlib.Path] = []
 	output_for_lists = pathlib.Path(m3u_output_dir) if m3u_output_dir else None
 	for name, tracks in by_playlist.items():
@@ -784,6 +782,30 @@ def write_library_m3us(
 		if write_m3u_plain:
 			written.append(write_m3u(root, name, tracks, fmt, suffix=".m3u", encoding="utf-8-sig", playlist_output_dir=output_for_lists))
 	return written
+
+
+def m3u_ready_tracks(
+	manifest_tracks: list[dict],
+	output_dir: str | pathlib.Path,
+	fmt: str,
+) -> list[tuple[str, dict]]:
+	"""(playlist name, row) for every song whose file exists, with `downloaded_path` set to that file.
+
+	The expected name wins (a fresh download); otherwise the file the library recognizes
+	(library_track_path: the recorded path, or the same name without an outdated position prefix).
+	write_m3u lists `downloaded_path` when the expected file is missing.
+	"""
+	root = pathlib.Path(output_dir)
+	listing_cache: dict = {}
+	ready: list[tuple[str, dict]] = []
+	for track in manifest_tracks:
+		name = str(track.get("playlist") or "Playlist")
+		found = expected_track_path(track, root, fmt)
+		if not found.is_file():
+			found = library_track_path(track, root, fmt, listing_cache=listing_cache, playlist_tracks=manifest_tracks)
+		if found.is_file():
+			ready.append((name, dict(track, downloaded_path=str(found))))
+	return ready
 
 
 def export_csv(path: str | pathlib.Path, library: dict, playlist_ids: set[str] | None = None) -> None:
