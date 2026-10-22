@@ -40,7 +40,7 @@ from csvmusic.core.apple_music_import import fetch_apple_music_source
 from csvmusic.core.spotify_import import fetch_spotify_playlist
 from csvmusic.core.deezer_import import fetch_deezer_source
 from csvmusic.core.amazon_music_import import fetch_amazon_music_source
-from csvmusic.core.update_check import UpdateInfo, should_check_for_updates, update_check_timestamp
+from csvmusic.core.update_check import UpdateInfo, should_check_for_updates, update_check_timestamp, update_checks_enabled
 from csvmusic.version import APP_VERSION
 
 # Grouped write of library.json during downloads (it is always written when the batch ends and on close).
@@ -1525,6 +1525,8 @@ class LibraryModeDialog(QDialog):
 		QTimer.singleShot(1500, self._start_update_check)
 
 	def _start_update_check(self) -> None:
+		if not update_checks_enabled():
+			return
 		if self.update_check_worker is not None and self.update_check_worker.isRunning():
 			return
 		settings = load_settings()

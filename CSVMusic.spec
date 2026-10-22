@@ -83,6 +83,6 @@ if sys.platform.startswith('darwin'):
         bundle,
         name='CSVMusic.app',
         icon=str(MAC_ICON) if MAC_ICON.exists() else None,
-        bundle_identifier='com.angall1.csvmusic',
+        bundle_identifier='com.teles.csvmusic',
         info_plist={'LSMinimumSystemVersion': '12.0'},
     )

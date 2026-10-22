@@ -5,6 +5,7 @@ from csvmusic.core import log as app_log
 
 
 def test_macos_log_goes_to_library_logs_of_the_fork(monkeypatch, tmp_path: pathlib.Path):
+	monkeypatch.delenv("CSVMUSIC_LOG_DIR", raising=False)
 	monkeypatch.setattr(app_log.sys, "platform", "darwin")
 	monkeypatch.setattr(app_log.pathlib.Path, "home", classmethod(lambda cls: tmp_path))
 

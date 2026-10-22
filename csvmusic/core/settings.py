@@ -21,42 +21,59 @@ _unreadable_on_disk = False
 _timer: threading.Timer | None = None
 
 
-def _settings_dir() -> pathlib.Path:
-	if sys.platform.startswith("win"):
-		appdata = os.environ.get("APPDATA")
-		if appdata:
-			appdata_path = pathlib.Path(appdata)
-			old = appdata_path / "Spotify2Media"
-			new = appdata_path / "CSVMusic"
-			if old.exists() and not new.exists():
-				try:
-					old.rename(new)
-				except Exception:
-					return old
-			return new
+# The fork keeps its own data folder so it runs next to the original CSVMusic without touching its library.
+FORK_FOLDER_NAME = "CSVMusicTeles"
+# Points the data folder elsewhere (tests and screenshots use it so they never read or write the real library).
+DATA_DIR_ENV = "CSVMUSIC_DATA_DIR"
+# What the first run copies from the original app (never moved, never changed there).
+SEED_FILES = ("settings.json", "library.json", "youtube-cookies.txt")
+
+
+def _folder_candidates() -> tuple[pathlib.Path, list[pathlib.Path]]:
+	"""This fork's folder, then the original app's folders to seed it from (newest name first)."""
 	home = pathlib.Path.home()
+	if sys.platform.startswith("win"):
+		appdata = pathlib.Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
+		return appdata / FORK_FOLDER_NAME, [appdata / "CSVMusic", appdata / "Spotify2Media"]
 	if sys.platform.startswith("darwin"):
-		new = home / "Library" / "Application Support" / "CSVMusic"
-		old_candidates = [
-			home / "Library" / "Application Support" / "Spotify2Media",
+		support = home / "Library" / "Application Support"
+		return support / FORK_FOLDER_NAME, [
+			support / "CSVMusic",
+			support / "Spotify2Media",
 			home / ".local" / "share" / "csvmusic",
 			home / ".local" / "share" / "spotify2media",
 		]
-	else:
-		xdg_data_home = os.environ.get("XDG_DATA_HOME")
-		base = pathlib.Path(xdg_data_home).expanduser() if xdg_data_home else home / ".local" / "share"
-		new = base / "csvmusic"
-		old_candidates = [base / "spotify2media"]
-	for old in old_candidates:
-		if not old.exists() or new.exists():
+	xdg_data_home = os.environ.get("XDG_DATA_HOME")
+	base = pathlib.Path(xdg_data_home).expanduser() if xdg_data_home else home / ".local" / "share"
+	return base / FORK_FOLDER_NAME.lower(), [base / "csvmusic", base / "spotify2media"]
+
+
+def _seed_from_original(target: pathlib.Path, sources: list[pathlib.Path]) -> None:
+	"""First run only: COPY the original app's settings and library so no playlist is lost."""
+	for source in sources:
+		files = [source / name for name in SEED_FILES if (source / name).is_file()]
+		if not files:
 			continue
+		target.mkdir(parents=True, exist_ok=True)
+		for path in files:
+			destination = target / path.name
+			if not destination.exists():
+				shutil.copy2(path, destination)
+		_log(f"settings first run: copied {[path.name for path in files]} from {source} to {target}")
+		return
+
+
+def _settings_dir() -> pathlib.Path:
+	override = os.environ.get(DATA_DIR_ENV, "").strip()
+	if override:
+		return pathlib.Path(override).expanduser()
+	target, originals = _folder_candidates()
+	if not any((target / name).exists() for name in ("settings.json", "library.json")):
 		try:
-			new.parent.mkdir(parents=True, exist_ok=True)
-			old.rename(new)
-		except Exception:
-			return old
-		break
-	return new
+			_seed_from_original(target, originals)
+		except OSError as exc:
+			_log(f"settings first run copy failed target={target} error={exc}")
+	return target
 
 
 def settings_path() -> pathlib.Path:

@@ -8,6 +8,12 @@ import requests
 
 LATEST_RELEASE_URL = "https://api.github.com/repos/angall1/CSVMusic/releases/latest"
 CHECK_INTERVAL = datetime.timedelta(days=1)
+# Off in the personal fork: the original's releases are not updates for this build.
+UPDATE_CHECK_ENABLED = False
+
+
+def update_checks_enabled() -> bool:
+	return UPDATE_CHECK_ENABLED
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,6 @@
 # tabs only
 import datetime
+import os
 import pathlib
 import sys
 import threading
@@ -8,11 +9,16 @@ import threading
 LOG_FOLDER_NAME = "CSVMusicTeles"
 MAX_LOG_BYTES = 5 * 1024 * 1024
 LOG_BACKUPS = 3
+# Points the log elsewhere (the test suite uses it so test lines never land in the real log).
+LOG_DIR_ENV = "CSVMUSIC_LOG_DIR"
 
 _lock = threading.Lock()
 
 
 def log_dir() -> pathlib.Path:
+	override = os.environ.get(LOG_DIR_ENV, "").strip()
+	if override:
+		return pathlib.Path(override).expanduser()
 	home = pathlib.Path.home()
 	if sys.platform.startswith("darwin"):
 		return home / "Library" / "Logs" / LOG_FOLDER_NAME
