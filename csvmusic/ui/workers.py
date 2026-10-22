@@ -17,7 +17,7 @@ from csvmusic.core.downloader import (
 	download_m4a, download_mp3, download_opus, tag_file, yt_thumbnail_bytes, cover_art_url_bytes, write_m3u, sanitize_name,
 	youtube_batch_mitigation, build_ytdlp_mitigation_args, detect_youtube_risk,
 	YOUTUBE_MITIGATION_NONE, YOUTUBE_MITIGATION_AGGRESSIVE, YouTubeMitigationProfile, AgeRestrictedError, YouTubeRiskError,
-	DownloadCancelled, cancellation_scope,
+	DownloadCancelled, cancellation_scope, check_downloaded_duration,
 )
 from csvmusic.core.paths import ytdlp_path as _resolve_ytdlp, INTERNAL_YTDLP
 from csvmusic.core.subprocess_env import subprocess_kwargs
@@ -217,6 +217,7 @@ class PipelineWorker(QThread):
 		self.row_indices = row_indices or []
 		self._stop = False
 		self._cancel = threading.Event()
+		self._last_duration_check = None
 		self._mitigation = YOUTUBE_MITIGATION_NONE
 
 	def stop(self):
@@ -322,8 +323,15 @@ class PipelineWorker(QThread):
 		return ordered or ([match] if match else [])
 
 	def _tag_before_install(self, track: Dict, row_idx: int, video_id: str, cover_holder: Dict) -> Callable[[pathlib.Path], None]:
-		"""Tag the staged file; the downloader moves it into place only afterwards."""
+		"""Check the length and tag the staged file; the downloader moves it into place only afterwards."""
 		def _finish(staged: pathlib.Path) -> None:
+			# Link escolhido à mão vence a conferência automática: só registra.
+			user_choice = bool(track.get("preferred_selection_locked") and track.get("preferred_video_id"))
+			check = check_downloaded_duration(staged, track, reject=not user_choice)
+			cover_holder["duration"] = check
+			if check is not None and check.needs_review:
+				kept = " (user choice kept)" if user_choice else ""
+				log(f"duration check: video_id={video_id} track='{track.get('artists', '')} — {track.get('title', '')}' file={check.actual_s:.1f}s expected={check.expected_s:.1f}s diff={check.diff_s:+.1f}s{kept}")
 			self.sig_row_status.emit(row_idx, "Tagging…")
 			cover = _track_cover_bytes(track, video_id)
 			cover_holder["cover"] = cover
@@ -340,6 +348,7 @@ class PipelineWorker(QThread):
 			cover_holder: Dict = {}
 			try:
 				fp = self._download_with_profile(vid, dest_dir, base, self._mitigation, before_install=self._tag_before_install(track, row_idx, vid, cover_holder))
+				self._last_duration_check = cover_holder.get("duration")
 				return fp, cover_holder.get("cover"), candidate
 			except (AgeRestrictedError, YouTubeRiskError, DownloadCancelled):
 				raise
@@ -511,6 +520,7 @@ class PipelineWorker(QThread):
 					self.sig_row_status.emit(row_idx, f"Downloading ({self.fmt})…")
 				error_msg = None
 				cancelled = False
+				self._last_duration_check = None
 				candidate_sequence = self._ordered_force_candidates(t, match, options)
 				fallback_attempts_enabled = self.force_download and len(candidate_sequence) > 1
 
@@ -566,6 +576,11 @@ class PipelineWorker(QThread):
 					payload["downloaded"] = True
 					payload["file_path"] = str(fp)
 					payload["cover_bytes"] = cover
+					duration_check = self._last_duration_check
+					if duration_check is not None:
+						payload["downloaded_duration_ms"] = int(round(duration_check.actual_s * 1000))
+						payload["duration_verified"] = duration_check.verified
+						payload["duration_needs_review"] = duration_check.needs_review
 					from csvmusic.core.audio_quality import audio_quality
 					quality = audio_quality(fp)
 					payload["audio_quality"] = quality

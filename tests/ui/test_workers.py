@@ -249,7 +249,7 @@ def test_skipped_tracks_do_not_wait_between_tracks(monkeypatch, tmp_path):
 	assert sleeps == []
 
 
-def _fake_download_tools(monkeypatch, *, payload=b"new audio", codec="aac"):
+def _fake_download_tools(monkeypatch, *, payload=b"new audio", codec="aac", duration_s=244.0):
 	"""Real downloader functions with simulated yt-dlp and ffmpeg (no network)."""
 	import shutil
 	import subprocess
@@ -257,7 +257,7 @@ def _fake_download_tools(monkeypatch, *, payload=b"new audio", codec="aac"):
 
 	def fake_ytdlp(args):
 		target = args[args.index("-o") + 1].replace("%(ext)s", "webm")
-		pathlib.Path(target).write_bytes(payload)
+		pathlib.Path(target).write_bytes(payload if payload is not None else args[-1].encode())
 		return 0, "", ""
 
 	def fake_capture(cmd, **_kwargs):
@@ -273,6 +273,10 @@ def _fake_download_tools(monkeypatch, *, payload=b"new audio", codec="aac"):
 	monkeypatch.setattr(downloader, "_run_capture", fake_capture)
 	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
 	monkeypatch.setattr(downloader, "store_source", lambda _path: None)
+	if callable(duration_s):
+		monkeypatch.setattr(downloader, "measure_audio_duration_s", duration_s)
+	else:
+		monkeypatch.setattr(downloader, "measure_audio_duration_s", lambda _path: duration_s)
 
 
 def test_pipeline_tags_the_file_before_it_appears_in_the_playlist(monkeypatch, tmp_path):
@@ -402,3 +406,88 @@ def test_closing_main_window_never_terminates_a_worker_thread():
 
 	assert "stop" in thread.calls
 	assert "terminate" not in thread.calls
+
+
+def _duration_by_video(lengths: dict[str, float]):
+	"""Simulated mutagen: the staged file holds the URL it came from."""
+	def measure(path):
+		url = pathlib.Path(path).read_bytes().decode()
+		return lengths[url.rsplit("v=", 1)[-1]]
+	return measure
+
+
+def test_wrong_length_download_is_rejected_and_next_candidate_used(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import INTERNAL_YTDLP, TRASH_DIR_NAME
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.yt_dlp_path = INTERNAL_YTDLP
+	worker.ffmpeg_path_override = "ffmpeg"
+	options = [
+		{"videoId": "clip", "title": "Complicated", "author": "Avril Lavigne", "source": "video", "score": 0.95},
+		{"videoId": "audio", "title": "Complicated", "author": "Avril Lavigne", "source": "music", "score": 0.9},
+	]
+	results = []
+	tagged = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	_fake_download_tools(monkeypatch, payload=None, duration_s=_duration_by_video({"clip": 281.0, "audio": 245.0}))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: (options[0], 0.95, options))
+	monkeypatch.setattr(workers, "_track_cover_bytes", lambda _track, _vid: None)
+	monkeypatch.setattr(workers, "tag_file", lambda path, *_args, **_kwargs: tagged.append(path))
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	monkeypatch.setattr("csvmusic.core.audio_quality.audio_quality", lambda _path: {"low": False, "codec": "mp3", "kbps": 256})
+	worker.run()
+
+	final = tmp_path / "Test Playlist" / "Avril Lavigne - Complicated.mp3"
+	assert results[0]["downloaded"] is True
+	assert results[0]["match"]["videoId"] == "audio"
+	assert results[0]["downloaded_duration_ms"] == 245000
+	assert results[0]["duration_verified"] is True
+	assert final.read_bytes().decode().endswith("v=audio")
+	assert len(tagged) == 1
+	assert not (tmp_path / "Test Playlist" / TRASH_DIR_NAME).exists()
+
+
+def test_every_candidate_with_wrong_length_fails_the_track(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import INTERNAL_YTDLP
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.yt_dlp_path = INTERNAL_YTDLP
+	worker.ffmpeg_path_override = "ffmpeg"
+	option = {"videoId": "live", "title": "Complicated", "author": "Avril Lavigne", "source": "music", "score": 0.9}
+	results = []
+	_fake_download_tools(monkeypatch, payload=None, duration_s=_duration_by_video({"live": 300.0}))
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: (option, 0.9, [option]))
+	monkeypatch.setattr(workers, "tag_file", lambda *_args, **_kwargs: None)
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	worker.run()
+
+	assert results[0]["downloaded"] is False
+	assert "wrong length" in results[0]["error"]
+	assert not (tmp_path / "Test Playlist" / "Avril Lavigne - Complicated.mp3").exists()
+
+
+def test_link_chosen_by_hand_is_kept_even_with_wrong_length(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import INTERNAL_YTDLP
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.yt_dlp_path = INTERNAL_YTDLP
+	worker.ffmpeg_path_override = "ffmpeg"
+	worker.tracks_override[0]["preferred_video_id"] = "handpicked"
+	worker.tracks_override[0]["preferred_selection_locked"] = True
+	results = []
+	logged = []
+	_fake_download_tools(monkeypatch, payload=None, duration_s=_duration_by_video({"handpicked": 300.0}))
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "_track_cover_bytes", lambda _track, _vid: None)
+	monkeypatch.setattr(workers, "tag_file", lambda *_args, **_kwargs: None)
+	monkeypatch.setattr(workers, "log", logged.append)
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	monkeypatch.setattr("csvmusic.core.audio_quality.audio_quality", lambda _path: {"low": False, "codec": "mp3", "kbps": 256})
+	worker.run()
+
+	assert results[0]["downloaded"] is True
+	assert results[0]["match"]["videoId"] == "handpicked"
+	assert results[0]["duration_verified"] is False
+	assert results[0]["duration_needs_review"] is True
+	assert any("user choice kept" in line and "+56.0s" in line for line in logged)

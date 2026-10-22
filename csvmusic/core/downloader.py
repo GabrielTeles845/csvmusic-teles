@@ -993,6 +993,102 @@ def download_mp3(video_id: str, dst_dir: pathlib.Path, base_name: str, cbr_320: 
 	finally:
 		_finish_staging(staging, safe_base)
 
+# --- Conferência da duração depois de baixar (doc 13 §4.4) -------------------
+
+# Até aqui a diferença é normal (arredondamento, silêncio no começo/fim).
+DURATION_VERIFIED_MAX_S = 3.0
+# Acima disto é outra versão ou um download cortado: rejeita.
+DURATION_REJECT_OVER_S = 10.0
+# Fontes que podem trazer outra versão da música; não servem para rejeitar.
+_UNTRUSTED_DURATION_SOURCES = {"deezer", "itunes", "musicbrainz", "youtube"}
+
+
+class DurationMismatchError(DownloadError):
+	"""The downloaded file is much longer or shorter than the song asked for."""
+
+
+@dataclass(frozen=True)
+class DurationCheck:
+	expected_s: float
+	actual_s: float
+
+	@property
+	def diff_s(self) -> float:
+		return self.actual_s - self.expected_s
+
+	@property
+	def verified(self) -> bool:
+		return abs(self.diff_s) <= DURATION_VERIFIED_MAX_S
+
+	@property
+	def needs_review(self) -> bool:
+		return not self.verified
+
+
+def trusted_expected_duration(track: Dict) -> tuple[float, float] | None:
+	"""Expected length in seconds and its precision, when the source is trustworthy."""
+	try:
+		duration_ms = float(track.get("duration_ms") or 0)
+	except (TypeError, ValueError):
+		return None
+	if duration_ms <= 0:
+		return None
+	source = str(track.get("duration_source") or "").strip().lower()
+	if source in _UNTRUSTED_DURATION_SOURCES:
+		return None
+	try:
+		precision = max(0.0, float(track.get("duration_precision_s") or 0))
+	except (TypeError, ValueError):
+		precision = 0.0
+	return duration_ms / 1000.0, precision
+
+
+def measure_audio_duration_s(path: pathlib.Path) -> float | None:
+	"""Real length of an audio file, read by mutagen (no decoding)."""
+	try:
+		import mutagen
+		audio = mutagen.File(str(path))
+	except Exception as exc:
+		log(f"duration check: could not read '{path.name}': {exc}")
+		return None
+	length = getattr(getattr(audio, "info", None), "length", None)
+	try:
+		length = float(length)
+	except (TypeError, ValueError):
+		return None
+	return length if length > 0 else None
+
+
+def _format_seconds(seconds: float) -> str:
+	total = int(round(abs(seconds)))
+	return f"{total // 60}:{total % 60:02d}"
+
+
+def check_downloaded_duration(path: pathlib.Path, track: Dict, *, reject: bool = True) -> DurationCheck | None:
+	"""Compare the file length with the trusted length of the requested song.
+
+	Returns ``None`` when there is no trusted length to compare with. With
+	``reject``, a difference above ``DURATION_REJECT_OVER_S`` (or an unreadable
+	file) raises ``DurationMismatchError`` so the next candidate can be tried.
+	"""
+	expected = trusted_expected_duration(track)
+	if expected is None:
+		return None
+	expected_s, precision = expected
+	actual_s = measure_audio_duration_s(path)
+	if actual_s is None:
+		if reject:
+			raise DurationMismatchError(f"could not read the length of the downloaded file (expected {_format_seconds(expected_s)})")
+		return None
+	check = DurationCheck(expected_s, actual_s)
+	if reject and abs(check.diff_s) > DURATION_REJECT_OVER_S + precision:
+		sign = "+" if check.diff_s > 0 else "-"
+		raise DurationMismatchError(
+			f"wrong length: file {_format_seconds(actual_s)}, expected {_format_seconds(expected_s)} ({sign}{abs(check.diff_s):.0f} s)"
+		)
+	return check
+
+
 def write_m3u(out_dir: pathlib.Path, playlist_name: str, tracks_done: List[Dict], ext: str, *, suffix: str = ".m3u8", encoding: str = "utf-8", playlist_output_dir: pathlib.Path | None = None) -> pathlib.Path:
 	media_dir = out_dir / _safe(playlist_name)
 	media_dir.mkdir(parents=True, exist_ok=True)

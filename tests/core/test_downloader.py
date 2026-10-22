@@ -466,3 +466,77 @@ def test_stop_before_next_attempt_skips_remaining_clients(monkeypatch, tmp_path)
 			downloader.download_mp3("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
 	assert len(calls) == 1
 	assert not (tmp_path / downloader.STAGING_DIR_NAME).exists()
+
+
+def _length(monkeypatch, seconds):
+	monkeypatch.setattr(downloader, "measure_audio_duration_s", lambda _path: seconds)
+
+
+@pytest.mark.parametrize("track", [
+	{"duration_ms": 0},
+	{},
+	{"duration_ms": 177000, "duration_source": "deezer"},
+	{"duration_ms": 177000, "duration_source": "iTunes"},
+])
+def test_duration_check_is_skipped_without_trusted_length(monkeypatch, tmp_path, track):
+	_length(monkeypatch, 999.0)
+	assert downloader.check_downloaded_duration(tmp_path / "x.mp3", track) is None
+
+
+@pytest.mark.parametrize("actual, verified", [(177.0, True), (179.9, True), (174.2, True), (183.0, False), (187.0, False)])
+def test_small_length_differences_are_accepted(monkeypatch, tmp_path, actual, verified):
+	_length(monkeypatch, actual)
+	check = downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000, "duration_source": "csv"})
+	assert check.verified is verified
+	assert check.needs_review is (not verified)
+
+
+@pytest.mark.parametrize("actual", [187.5, 214.0, 90.0, 166.0])
+def test_length_off_by_more_than_ten_seconds_is_rejected(monkeypatch, tmp_path, actual):
+	_length(monkeypatch, actual)
+	with pytest.raises(downloader.DurationMismatchError, match="wrong length"):
+		downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000})
+
+
+def test_minute_second_precision_gets_one_more_second(monkeypatch, tmp_path):
+	_length(monkeypatch, 188.0)
+	track = {"duration_ms": 177500, "duration_precision_s": 1}
+	assert downloader.check_downloaded_duration(tmp_path / "x.mp3", track).needs_review is True
+
+
+def test_unreadable_file_is_rejected_when_length_is_known(monkeypatch, tmp_path):
+	_length(monkeypatch, None)
+	with pytest.raises(downloader.DurationMismatchError):
+		downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000})
+
+
+def test_without_reject_a_wrong_length_is_only_reported(monkeypatch, tmp_path):
+	_length(monkeypatch, 240.0)
+	check = downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000}, reject=False)
+	assert check.diff_s == pytest.approx(63.0)
+	assert check.needs_review is True
+
+
+def test_real_mp3_length_is_read_by_mutagen(tmp_path):
+	import shutil
+	import subprocess
+	ffmpeg = shutil.which("ffmpeg")
+	if not ffmpeg:
+		pytest.skip("ffmpeg not installed")
+	path = tmp_path / "tone.mp3"
+	subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=5", "-codec:a", "libmp3lame", str(path)], check=True)
+	assert downloader.measure_audio_duration_s(path) == pytest.approx(5.0, abs=0.2)
+
+
+def test_wrong_length_in_finishing_step_keeps_previous_file(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+	_length(monkeypatch, 300.0)
+	previous = tmp_path / "Artist - Song.mp3"
+	previous.write_bytes(b"old audio")
+	track = {"duration_ms": 177000}
+
+	with pytest.raises(downloader.DurationMismatchError):
+		downloader.download_mp3("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg", before_install=lambda staged: downloader.check_downloaded_duration(staged, track))
+
+	assert previous.read_bytes() == b"old audio"
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.mp3"]
