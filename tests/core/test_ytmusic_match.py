@@ -65,8 +65,44 @@ def test_alternative_ranking_can_include_duration_mismatch():
 	})
 	track = {"title": "Tiny Song", "artists": "Artist", "duration_ms": 15000}
 
-	assert ytmusic_match._rank_candidates(yt, track, enforce_duration=True) == []
+	enforced = ytmusic_match._rank_candidates(yt, track, enforce_duration=True)
+	assert [option["duration_mismatch"] for option in enforced] == [True]
 	assert len(ytmusic_match._rank_candidates(yt, track, enforce_duration=False)) == 1
+
+
+def test_duration_mismatch_is_not_an_empty_search(monkeypatch):
+	# Every result is far longer than the requested track (live version).
+	yt = FakeYTMusic({
+		"songs": [{"videoId": "live", "title": "Song (Live)", "artists": [{"name": "Artist"}], "duration": "6:40"}],
+		"videos": [{"videoId": "clip", "title": "Song", "author": "Artist", "duration": "5:30"}],
+	})
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	sleeps = []
+	monkeypatch.setattr(ytmusic_match.time, "sleep", sleeps.append)
+	monkeypatch.setattr(ytmusic_match, "YTMusic", lambda: yt)
+
+	match, confidence, options = ytmusic_match.find_best(yt, track)
+
+	assert match is None
+	assert confidence == 0.0
+	assert {option["videoId"] for option in options} == {"live", "clip"}
+	assert all(option["duration_mismatch"] for option in options)
+	assert sleeps == []  # no retry rounds: the search did return results
+
+
+def test_in_tolerance_result_ranks_above_higher_scoring_mismatch(monkeypatch):
+	yt = FakeYTMusic({
+		"songs": [
+			{"videoId": "long", "title": "Song", "artists": [{"name": "Artist"}], "duration": "6:00"},
+			{"videoId": "fits", "title": "Song", "artists": [{"name": "Artist"}], "duration": "3:20"},
+		],
+	})
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	monkeypatch.setattr(ytmusic_match, "_score", lambda _t, cand: 0.95 if cand["videoId"] == "long" else 0.7)
+	match, confidence, options = ytmusic_match.find_best(yt, track)
+	assert match["videoId"] == "fits"
+	assert confidence == 0.7
+	assert [option["videoId"] for option in options] == ["fits", "long"]
 
 
 def test_confident_youtube_music_song_is_preferred_over_higher_scoring_video(monkeypatch):

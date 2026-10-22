@@ -388,23 +388,36 @@ def _rank_candidates(
 
 	scored: List[Dict] = []
 	for cand in all_cands:
-		if enforce_duration and not _duration_within_tolerance(track, cand):
-			continue
 		s = _score(track, cand)
 		item = dict(cand)
 		item["score"] = s
 		item["version_markers"] = sorted(_candidate_version_markers(cand))
+		# Results outside the duration tolerance stay visible as options, but
+		# flagged: they are never picked automatically and they do not make
+		# the search look empty (which would trigger retries and abort a batch).
+		item["duration_mismatch"] = not _duration_within_tolerance(track, cand)
 		scored.append(item)
 
-	def priority(candidate: Dict) -> tuple[int, int, float, int]:
+	def priority(candidate: Dict) -> tuple[int, int, int, float, int]:
 		score = float(candidate.get("score", 0.0) or 0.0)
 		is_music = 1 if candidate.get("source") == "music" else 0
+		fits = 0 if enforce_duration and candidate.get("duration_mismatch") else 1
 		# Prefer a confidently matching YouTube Music song over a regular
 		# YouTube video. Below the confidence threshold, relevance still wins
 		# so a poor music result cannot displace a usable video fallback.
-		return (1 if score >= CONFIDENCE_MIN else 0, is_music if score >= CONFIDENCE_MIN else 0, score, is_music)
+		return (fits, 1 if score >= CONFIDENCE_MIN else 0, is_music if score >= CONFIDENCE_MIN else 0, score, is_music)
 
 	return sorted(scored, key=priority, reverse=True)
+
+
+def _best_option(options: List[Dict]) -> Tuple[Optional[Dict], float]:
+	"""Best automatic pick: the top option within the duration tolerance."""
+	for option in options:
+		if option.get("duration_mismatch"):
+			continue
+		score = float(option.get("score", 0.0) or 0.0)
+		return (option if score >= CONFIDENCE_MIN else None), score
+	return None, 0.0
 
 def find_best(yt: YTMusic, track: Dict) -> Tuple[Optional[Dict], float, List[Dict]]:
 	options = _rank_candidates(yt, track)
@@ -424,14 +437,14 @@ def find_best(yt: YTMusic, track: Dict) -> Tuple[Optional[Dict], float, List[Dic
 			raise last_exc
 	if not options:
 		return None, 0.0, []
-	best = options[0]
-	return (best if best["score"] >= CONFIDENCE_MIN else None, best["score"], options)
+	best, score = _best_option(options)
+	return best, score, options
 
 def more_candidates(track: Dict, exclude_ids: Set[str] | None = None, limit: int = ALT_SEARCH_LIMIT, source_mode: SearchSource = "all") -> List[Dict]:
 	exclude = set(exclude_ids or [])
 	yt = YTMusic()
 	# Alternatives are explicitly user-selected. Keep duration-mismatched results
-	# visible while duration scoring still ranks likely versions first.
+	# visible (flagged) while duration scoring still ranks likely versions first.
 	options = _rank_candidates(yt, track, limit, source_mode, enforce_duration=False)
 	visible = [opt for opt in options if opt.get("videoId") not in exclude]
 	# Keep score order within each source, but make the manual browser's source

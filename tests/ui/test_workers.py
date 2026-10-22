@@ -203,3 +203,53 @@ def test_redownload_rewrites_m3u_from_complete_existing_manifest(monkeypatch, tm
 	worker.run()
 
 	assert [[track["title"] for track in tracks] for tracks in written] == [["Existing Song", "Complicated"]]
+
+
+def _wrong_length_result():
+	option = {
+		"videoId": "long-live-version",
+		"title": "Complicated (Live)",
+		"author": "Avril Lavigne",
+		"source": "music",
+		"score": 0.7,
+		"duration_mismatch": True,
+	}
+	return None, 0.0, [option]
+
+
+def test_wrong_length_results_do_not_abort_batch_as_empty_search(monkeypatch, tmp_path):
+	worker = _pipeline(tmp_path, force_download=False)
+	base = worker.tracks_override[0]
+	worker.tracks_override = [dict(base, title=f"Song {n}") for n in range(7)]
+	worker.row_indices = list(range(7))
+	results = []
+	warnings = []
+	statuses = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	worker.sig_warning.connect(warnings.append)
+	worker.sig_row_status.connect(lambda _row, status: statuses.append(status))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: _wrong_length_result())
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	worker.run()
+
+	assert len(results) == 7
+	assert all(result["skipped"] for result in results)
+	assert not any("no results" in warning for warning in warnings)
+	assert "Skipped (wrong length)" in statuses
+
+
+def test_force_download_never_picks_wrong_length_result(monkeypatch, tmp_path):
+	worker = _pipeline(tmp_path, force_download=True)
+	results = []
+	calls = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: _wrong_length_result())
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	monkeypatch.setattr(worker, "_download_with_profile", lambda video_id, *_args: calls.append(video_id))
+	worker.run()
+
+	assert calls == []
+	assert results[0]["skipped"] is True
+	assert results[0]["forced_match"] is False
