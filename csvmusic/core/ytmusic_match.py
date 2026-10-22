@@ -25,6 +25,9 @@ _VERSION_PATTERNS = {
 	"album": r"\balbum version\b",
 }
 _CAST_PENALTY_TERMS = {"cast","original cast","tribute band","musical","orchestra"}
+# A bracket counts as a guest credit only when it holds a whole credit word,
+# so "(Defeated)" or "(Feather Mix)" stay part of the title.
+_FEAT_BRACKET = re.compile(r"\s*[\(\[][^\)\]]*\b(?:feat|ft|featuring)\b[^\)\]]*[\)\]]", re.I)
 
 def _norm_text(s: str) -> str:
 	text = unicodedata.normalize("NFKC", (s or "").casefold())
@@ -216,7 +219,7 @@ def _clean_title_artist(title: str, artists: str) -> str:
 def _strip_noise(title: str) -> str:
 	# Remove common bracketed qualifiers that hurt search recall
 	# e.g., (feat. ...), [Official Video], (Live), etc.
-	s = re.sub(r"[\(\[][^\)\]]*[Ff]eat[^\)\]]*[\)\]]", " ", title)
+	s = _FEAT_BRACKET.sub(" ", title)
 	s = re.sub(r"[\(\[][Oo]fficial[^\)\]]*[\)\]]", " ", s)
 	s = re.sub(r"[\(\[][Ll]ive[^\)\]]*[\)\]]", " ", s)
 	s = re.sub(r"[\(\[][Rr]emix[^\)\]]*[\)\]]", " ", s)

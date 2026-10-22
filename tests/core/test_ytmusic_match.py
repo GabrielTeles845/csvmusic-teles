@@ -179,3 +179,11 @@ def test_translated_title_floor_rejects_duration_mismatch():
 	}
 
 	assert ytmusic_match._score(track, candidate) < ytmusic_match.CONFIDENCE_MIN
+
+
+def test_strip_noise_removes_feat_credit_only_as_whole_word():
+	assert ytmusic_match._strip_noise("Song (feat. Guest)") == "Song"
+	assert ytmusic_match._strip_noise("Song [ft. Guest]") == "Song"
+	assert ytmusic_match._strip_noise("Song (Radio Edit; featuring Guest)") == "Song"
+	assert ytmusic_match._strip_noise("Undefeated (Defeated)") == "Undefeated Defeated"
+	assert ytmusic_match._strip_noise("Bird (Feather Song)") == "Bird Feather Song"
