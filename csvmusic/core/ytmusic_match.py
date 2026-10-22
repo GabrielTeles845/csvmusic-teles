@@ -98,6 +98,42 @@ def _version_markers(value: str) -> Set[str]:
 	text = _norm_text(value)
 	return {marker for marker, pattern in _VERSION_PATTERNS.items() if re.search(pattern, text, flags=re.I)}
 
+# Spotify appends release qualifiers after " - " ("Country House - 2012
+# Remaster", "Song - Live at Leeds"). They describe the version, not the
+# title, so they leave the title core and survive only as version markers.
+_QUALIFIER = (
+	r"(?:\d{4}\s+)?(?:digital(?:ly)?\s+)?re-?master(?:ed)?(?:\s+\d{4})?(?:\s+(?:version|edition))?"
+	r"|radio\s+(?:edit|version)|single\s+version|album\s+version|original\s+(?:single\s+)?version"
+	r"|(?:u\.?s\.?\s+)?single\s+version|(?:mono|stereo)(?:\s+(?:version|mix))?|(?:\d{4}\s+)?(?:stereo\s+|mono\s+)?mix"
+	r"|live(?:\s+.*)?|acoustic(?:\s+.*)?|from\s+.*|edit|extended(?:\s+.*)?|bonus\s+track|demo(?:\s+version)?"
+)
+_DASH_SUFFIX = re.compile(r"\s+[-–—]\s+(?:" + _QUALIFIER + r")\s*$", re.I)
+_QUALIFIER_BRACKET = re.compile(r"\s*[\(\[]\s*(?:" + _QUALIFIER + r")\s*[\)\]]", re.I)
+_GUEST_BRACKET = re.compile(r"[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^\)\]]+)[\)\]]", re.I)
+_GUEST_SPLIT = re.compile(r"\s*(?:,|&|\band\b|\bx\b)\s*", re.I)
+
+
+def split_title(title: str) -> Tuple[str, Set[str], List[str]]:
+	"""Split a catalog title into (title core, version markers, guest artists).
+
+	"Country House - 2012 Remaster" -> ("Country House", {"remaster"}, []).
+	"Song (feat. A & B)" -> ("Song", set(), ["A", "B"]).
+	"""
+	raw = title or ""
+	markers = _version_markers(raw)
+	guests: List[str] = []
+	for match in _GUEST_BRACKET.finditer(raw):
+		for name in _GUEST_SPLIT.split(match.group(1)):
+			name = name.strip()
+			if name and name not in guests:
+				guests.append(name)
+	core = _GUEST_BRACKET.sub(" ", raw)
+	core = _FEAT_BRACKET.sub(" ", core)
+	core = _DASH_SUFFIX.sub("", core.rstrip())
+	core = _QUALIFIER_BRACKET.sub(" ", core)
+	core = re.sub(r"\s+", " ", core).strip()
+	return (core or raw.strip()), markers, guests
+
 def _duration_s(d: Optional[int | str]) -> int:
 	try:
 		if d is None:
@@ -134,12 +170,16 @@ def _duration_within_tolerance(track: Dict, cand: Dict) -> bool:
 def _score(track: Dict, cand: Dict) -> float:
 	# Score title and artist separately so "tribute to ARTIST" in the title
 	# does not masquerade as an actual artist match.
-	track_title_tokens = _toks(track.get("title",""))
-	track_artist_tokens = _toks(track.get("artists",""))
+	# Compare title cores: Spotify suffixes such as " - 2012 Remaster" and
+	# guest credits are not part of the song name on YouTube Music.
+	track_core, _track_markers, track_guests = split_title(track.get("title") or "")
+	_cand_core, _cand_markers, cand_guests = split_title(cand.get("title") or "")
+	track_title_tokens = _toks(track_core)
+	track_artist_tokens = _toks(" ".join([track.get("artists") or ""] + track_guests))
 	cand_title = cand.get("title") or ""
 	cand_art = _candidate_artist_text(cand)
 	cand_title_tokens = _toks(cand_title)
-	cand_artist_tokens = _toks(cand_art)
+	cand_artist_tokens = _toks(" ".join([cand_art] + cand_guests))
 	title_overlap = _overlap_ratio(track_title_tokens, cand_title_tokens)
 	artist_overlap = _overlap_ratio(track_artist_tokens, cand_artist_tokens)
 
@@ -176,7 +216,8 @@ def _score(track: Dict, cand: Dict) -> float:
 			p_pen += 0.10
 	if requested_versions:
 		for marker in requested_versions - candidate_versions:
-			p_pen += 0.08 if marker == "remaster" else 0.34
+			# A remaster is the same recording; its absence is not a penalty.
+			p_pen += 0.0 if marker == "remaster" else 0.34
 		for marker in candidate_versions - requested_versions:
 			p_pen += 0.03 if marker == "remaster" else 0.26
 	else:
@@ -238,14 +279,19 @@ def _query_variants(track: Dict) -> List[str]:
 	isrc = track.get("isrc")
 
 	base_title = title
+	core_title, _markers, _guests = split_title(base_title)
 	clean_title = _strip_noise(base_title)
+	core = _clean_title_artist(core_title, artists)
 	base = _clean_title_artist(base_title, artists)
 	clean = _clean_title_artist(clean_title, artists)
 
 	variants: List[str] = []
 	if isrc:
-		variants.append(f"{isrc} {clean}")
+		variants.append(f"{isrc} {core}")
 
+	# The title core comes first: Spotify suffixes like " - 2012 Remaster"
+	# only add noise to the YouTube Music search.
+	variants.append(core)
 	variants.append(base)
 	if clean != base:
 		variants.append(clean)

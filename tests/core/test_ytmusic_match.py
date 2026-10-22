@@ -187,3 +187,57 @@ def test_strip_noise_removes_feat_credit_only_as_whole_word():
 	assert ytmusic_match._strip_noise("Song (Radio Edit; featuring Guest)") == "Song"
 	assert ytmusic_match._strip_noise("Undefeated (Defeated)") == "Undefeated Defeated"
 	assert ytmusic_match._strip_noise("Bird (Feather Song)") == "Bird Feather Song"
+
+
+def test_split_title_removes_spotify_dash_suffixes():
+	cases = {
+		"Country House - 2012 Remaster": ("Country House", {"remaster"}),
+		"Wonderwall - Remastered 2014": ("Wonderwall", {"remaster"}),
+		"Song - Radio Edit": ("Song", {"edit"}),
+		"Song - Live at Leeds": ("Song", {"live"}),
+		"Song - Mono": ("Song", set()),
+		"Song - 2009 Mix": ("Song", set()),
+		"Song - From \"Some Film\"": ("Song", set()),
+		"Song (2012 Remaster)": ("Song", {"remaster"}),
+	}
+	for title, (core, markers) in cases.items():
+		got_core, got_markers, guests = ytmusic_match.split_title(title)
+		assert got_core == core, title
+		assert markers <= got_markers, title
+		assert guests == []
+
+
+def test_split_title_keeps_meaningful_title_parts():
+	assert ytmusic_match.split_title("(Don't Fear) The Reaper")[0] == "(Don't Fear) The Reaper"
+	assert ytmusic_match.split_title("Love - Hate")[0] == "Love - Hate"
+	assert ytmusic_match.split_title("Undefeated (Defeated)")[0] == "Undefeated (Defeated)"
+
+
+def test_split_title_moves_feat_and_with_guests_to_artists():
+	core, _markers, guests = ytmusic_match.split_title("Song (feat. Guest One & Guest Two)")
+	assert core == "Song"
+	assert guests == ["Guest One", "Guest Two"]
+	core, _markers, guests = ytmusic_match.split_title("Other Song (with Guest)")
+	assert core == "Other Song"
+	assert guests == ["Guest"]
+
+
+def test_blur_country_house_remaster_scores_above_point_eight():
+	# Real skipped track: Spotify title with " - 2012 Remaster", no duration.
+	track = {"title": "Country House - 2012 Remaster", "artists": "Blur", "duration_ms": 0}
+	candidate = {"title": "Country House", "artists": [{"name": "Blur"}], "author": "Blur", "duration_seconds": 241, "source": "music"}
+	assert ytmusic_match._score(track, candidate) > 0.8
+
+
+def test_feat_guest_in_title_does_not_lower_title_score():
+	track = {"title": "Song (feat. Guest)", "artists": "Artist", "duration_ms": 200000}
+	candidate = {"title": "Song", "artists": [{"name": "Artist"}, {"name": "Guest"}], "duration_seconds": 200, "source": "music"}
+	assert ytmusic_match._score(track, candidate) >= 0.9
+
+
+def test_query_variants_search_title_core_first():
+	track = {"title": "Country House - 2012 Remaster", "artists": "Blur"}
+	variants = ytmusic_match._query_variants(track)
+	assert variants[0] == "Country House Blur"
+	track = {"title": "Song (feat. Guest)", "artists": "Artist, Guest", "isrc": "GBAYE9500001"}
+	assert ytmusic_match._query_variants(track)[0] == "GBAYE9500001 Song Artist, Guest"
