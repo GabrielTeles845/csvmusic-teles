@@ -264,6 +264,10 @@ class WebServer:
 			raise HttpError(400, f"Parâmetro inválido: {name}") from exc
 
 	@staticmethod
+	def _is_index(value: Any) -> bool:
+		return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+	@staticmethod
 	def _key(value: Any) -> str | None:
 		"""Track.key mandado pela tela (opcional): o motor recusa com 409 se a música mudou de lugar."""
 		return str(value) if value not in (None, "") else None
@@ -322,8 +326,8 @@ class WebServer:
 
 	def api_set_enabled(self, match, query, body):
 		indices = body.get("indices")
-		if indices is not None and not isinstance(indices, list):
-			raise HttpError(400, "\"indices\" precisa ser uma lista.")
+		if indices is not None and (not isinstance(indices, list) or not all(self._is_index(index) for index in indices)):
+			raise HttpError(400, "\"indices\" precisa ser uma lista de números.")
 		keys = body.get("keys")
 		if keys is not None and not isinstance(keys, list):
 			raise HttpError(400, "\"keys\" precisa ser uma lista.")
@@ -368,6 +372,8 @@ class WebServer:
 
 	def api_open(self, match, query, body):
 		index = body.get("index")
+		if index is not None and not self._is_index(index):
+			raise HttpError(400, "Parâmetro inválido: index")
 		return self.call(self.engine.open_location, str(body.get("what") or ""), body.get("playlist_id"), int(index) if index is not None else None, self._key(body.get("key")))
 
 	def api_export_csv(self, match, query, body):
@@ -586,8 +592,15 @@ class WebServer:
 					return
 				body: dict = {}
 				if method in ("POST", "PATCH", "DELETE"):
-					length = int(self.headers.get("Content-Length") or 0)
+					raw_length = str(self.headers.get("Content-Length") or "0").strip()
+					if not raw_length.isdigit():
+						# Negativo prenderia a thread em rfile.read(-1); texto daria 500. O corpo não foi lido: fecha.
+						self.close_connection = True
+						self._error(400, "Tamanho do pedido inválido.")
+						return
+					length = int(raw_length)
 					if length > MAX_BODY_BYTES:
+						self.close_connection = True
 						self._error(413, "Arquivo grande demais.")
 						return
 					raw = self.rfile.read(length) if length else b""

@@ -212,6 +212,33 @@ def test_image_host_list():
 	assert sniff_image_type(b"<html>") is None
 
 
+def _raw(server, length: str) -> bytes:
+	with socket.create_connection(("127.0.0.1", server.port), timeout=3) as connection:
+		connection.sendall((
+			f"POST /api/scan/cancel HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\nX-CSVMusic-Token: {server.token}\r\n"
+			f"Content-Length: {length}\r\n\r\n"
+		).encode("ascii"))
+		try:
+			return connection.recv(200)
+		except socket.timeout:
+			return b"<sem resposta>"
+
+
+@pytest.mark.parametrize("length", ["-1", "abc", "1e3"])
+def test_bad_content_length_is_a_400_and_does_not_hang(web, length):
+	_app, server, _engine = web
+	answer = _raw(server, length)
+	assert answer.startswith(b"HTTP/1.1 400"), answer
+
+
+def test_bad_numbers_in_the_body_are_a_400(web):
+	app, server, _engine = web
+	bad_open = _request(app, server, "POST", "/api/open", body={"what": "file", "playlist_id": "spotify:big", "index": "x"})
+	assert bad_open["status"] == 400
+	bad_indices = _request(app, server, "POST", "/api/playlists/spotify:big/tracks/set-enabled", body={"enabled": False, "indices": ["x"]})
+	assert bad_indices["status"] == 400
+
+
 def test_stale_track_key_gets_409_over_http(web):
 	app, server, engine = web
 	first = _json(_request(app, server, "GET", "/api/playlists/spotify:big/tracks"))["items"]
