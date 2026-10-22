@@ -116,6 +116,21 @@ def test_import_csv_content(make_engine):
 	assert error.value.status == 400
 
 
+def test_two_spreadsheets_with_the_same_file_name_stay_apart(make_engine):
+	import base64
+	engine = make_engine(1)
+	first = "title,artist,album\nMusica A,Artista A,Album A\nMusica B,Artista B,Album B\n".encode("utf-8")
+	second = "title,artist,album\nOutra C,Artista C,Album C\n".encode("utf-8")
+	one = engine.import_csv_content("playlist.csv", base64.b64encode(first).decode("ascii"), "Minha festa")["added"][0]
+	two = engine.import_csv_content("playlist.csv", base64.b64encode(second).decode("ascii"), "Treino")["added"][0]
+	assert one != two
+	csvs = {playlist["name"]: [track["title"] for track in playlist["tracks"]] for playlist in engine.library["playlists"] if playlist["platform"] == "csv"}
+	assert csvs == {"Minha festa": ["Musica A", "Musica B"], "Treino": ["Outra C"]}
+	again = engine.import_csv_content("playlist.csv", base64.b64encode(first).decode("ascii"))["added"][0]
+	assert again == one
+	assert len([playlist for playlist in engine.library["playlists"] if playlist["platform"] == "csv"]) == 2
+
+
 def test_settings_round_trip_and_validation(make_engine):
 	engine = make_engine(2)
 	updated = engine.update_settings({"format": "mp3", "eq_bass_gain": 4, "theme": "dark", "write_m3u8": False})

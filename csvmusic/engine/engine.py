@@ -502,10 +502,16 @@ class Engine(QObject):
 		if not content:
 			raise EngineError(400, "A planilha está vazia.")
 		stem = sanitize_name(pathlib.Path(str(filename or "planilha.csv")).stem) or "planilha"
-		folder = settings_path().parent / "planilhas"
+		# A playlist da planilha é identificada pelo caminho do arquivo guardado. Uma pasta por conteúdo
+		# (hash curto) separa duas planilhas diferentes com o mesmo nome; a mesma planilha de novo cai
+		# no mesmo arquivo e atualiza a mesma playlist. O nome do arquivo continua o original (vira o
+		# nome da playlist quando a planilha não traz um).
+		digest = hashlib.sha256(content).hexdigest()[:10]
+		folder = settings_path().parent / "planilhas" / digest
 		folder.mkdir(parents=True, exist_ok=True)
 		target = folder / f"{stem}.csv"
-		target.write_bytes(content)
+		if not target.is_file() or target.read_bytes() != content:
+			target.write_bytes(content)
 		return self.import_csv_path(str(target), name=name)
 
 	def import_csv_path(self, path: str, *, name: str | None = None) -> dict:
