@@ -6,6 +6,12 @@ import secrets
 from typing import Any
 from urllib.parse import urlparse
 
+from csvmusic.core.webengine_env import configure_webengine_background_flags
+
+# Also covers the entry points that skip app.py; Chromium reads the flags when the
+# first browser profile is created, which happens after this import.
+configure_webengine_background_flags()
+
 from PySide6.QtCore import QThread, QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
