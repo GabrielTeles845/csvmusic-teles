@@ -3043,6 +3043,8 @@ class LibraryModeDialog(QDialog):
 			else f'Downloaded: "{downloaded_title}"' if downloaded_title
 			else ""
 		)
+		if needs_review and track.get("review_reason"):
+			youtube_info = f"{youtube_info}  •  {track['review_reason']}" if youtube_info else str(track["review_reason"])
 		if age_restricted:
 			youtube_info = "Age-restricted: needs a YouTube sign-in"
 		if not_found:
@@ -3126,7 +3128,8 @@ class LibraryModeDialog(QDialog):
 		status_icon.setAlignment(Qt.AlignCenter)
 		status_icon.setPixmap(_song_status_icon(icon_kind).pixmap(24, 24))
 		status_icon.setToolTip(
-			"Review this low-confidence downloaded match" if needs_review
+			f"Review this download: {track['review_reason']}" if needs_review and track.get("review_reason")
+			else "Review this low-confidence downloaded match" if needs_review
 			else "Last download failed" if has_error
 			else "Replacement queued for the next Download run" if track.get("force_redownload")
 			else "Audio file found" if icon_kind == "downloaded"
@@ -3274,6 +3277,7 @@ class LibraryModeDialog(QDialog):
 			return
 		track = playlist["tracks"][track_index]
 		track["low_confidence_review"] = False
+		track["review_reason"] = None
 		self._save()
 		self._refresh()
 		self.status.setText(f"Accepted the downloaded match for '{track.get('title') or 'song'}'.")
@@ -3789,7 +3793,10 @@ class LibraryModeDialog(QDialog):
 			downloaded=bool(payload.get("downloaded")), error=payload.get("error"), match=payload.get("match"),
 			low_confidence=bool(payload.get("low_confidence")), confidence=payload.get("confidence"),
 			skipped=bool(payload.get("skipped")),
-			skip_reason=describe_skip(payload.get("options"), payload.get("confidence")) if payload.get("skipped") else None,
+			skip_reason=(payload.get("skip_reason") or describe_skip(payload.get("options"), payload.get("confidence"))) if payload.get("skipped") else None,
+			failure_kind=payload.get("failure_kind"),
+			downloaded_duration_ms=payload.get("downloaded_duration_ms"),
+			duration_needs_review=bool(payload.get("duration_needs_review")),
 		)
 		after = track_status_counts(stored, name, output, fmt)
 		playlist_key = f"{playlist.get('platform') or 'spotify'}:{playlist.get('id')}"

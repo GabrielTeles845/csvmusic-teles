@@ -175,3 +175,57 @@ def test_successful_download_clears_recorded_skip():
 	stored = apply_library_download_result(library, PLAYLIST_ID, track, downloaded=True, match={"videoId": "v"})
 
 	assert stored["skip_state"] is None and stored["skip_reason"] is None and stored["skipped_at"] is None
+
+
+def test_length_review_marks_song_for_review_with_reason():
+	from csvmusic.core.library import apply_library_download_result, enabled_tracks
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "a", "title": "Song a", "artists": "Artist", "duration_ms": 200000}])
+	track = enabled_tracks(library)[0]
+
+	stored = apply_library_download_result(
+		library, PLAYLIST_ID, track, downloaded=True, match={"videoId": "v"},
+		downloaded_duration_ms=207000, duration_needs_review=True,
+	)
+	assert stored["low_confidence_review"] is True
+	assert stored["review_reason"] == "File is 7 s longer than the song"
+	assert stored["downloaded_duration_ms"] == 207000
+
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "a", "title": "Song a", "artists": "Artist", "duration_ms": 200000}])
+	kept = library["playlists"][0]["tracks"][0]
+	assert kept["review_reason"] == "File is 7 s longer than the song"
+	assert kept["downloaded_duration_ms"] == 207000
+
+
+def test_worker_failure_kind_wins_over_error_text():
+	from csvmusic.core.library import apply_library_download_result, enabled_tracks
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a"))
+	stored = apply_library_download_result(
+		library, PLAYLIST_ID, enabled_tracks(library)[0], downloaded=False,
+		error="ERROR: [youtube] abc: This video is unavailable", failure_kind="age_restricted",
+	)
+	assert stored["failure_kind"] == "age_restricted"
+
+
+def test_renamed_song_keeps_old_file_in_internal_trash(tmp_path):
+	from csvmusic.core.downloader import TRASH_DIR_NAME
+	from csvmusic.core.library import apply_library_download_result, enabled_tracks
+	from csvmusic.core.track_output import expected_track_path, library_format
+	library = _library_with_playlist()
+	library["output_dir"] = str(tmp_path)
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a"))
+	track = enabled_tracks(library)[0]
+	probe = dict(track, playlist="Playlist")
+	new_file = expected_track_path(probe, tmp_path, library_format(library))
+	new_file.parent.mkdir(parents=True, exist_ok=True)
+	new_file.write_bytes(b"new audio")
+	old_file = new_file.parent / "01- Old name.m4a"
+	old_file.write_bytes(b"old audio")
+	library["playlists"][0]["tracks"][0]["downloaded_path"] = str(old_file)
+
+	apply_library_download_result(library, PLAYLIST_ID, track, downloaded=True, match={"videoId": "v"})
+
+	assert not old_file.exists()
+	kept = list((new_file.parent / TRASH_DIR_NAME).iterdir())
+	assert len(kept) == 1 and kept[0].read_bytes() == b"old audio"

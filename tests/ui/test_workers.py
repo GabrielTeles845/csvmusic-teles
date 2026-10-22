@@ -557,3 +557,29 @@ def test_link_chosen_by_hand_is_kept_even_with_wrong_length(monkeypatch, tmp_pat
 	assert results[0]["duration_verified"] is False
 	assert results[0]["duration_needs_review"] is True
 	assert any("user choice kept" in line and "+56.0s" in line for line in logged)
+
+
+def test_age_restricted_failure_reports_its_kind(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import AgeRestrictedError
+	worker = _pipeline(tmp_path, force_download=True)
+	results = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: _low_confidence_result())
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	def fail(_video_id, *_args, **_kwargs):
+		raise AgeRestrictedError("Video unavailable")
+	monkeypatch.setattr(worker, "_download_with_profile", fail)
+	worker.run()
+	assert results[0]["failure_kind"] == "age_restricted"
+
+
+def test_skipped_track_reports_reason_with_best_score(monkeypatch, tmp_path):
+	worker = _pipeline(tmp_path, force_download=False)
+	results = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: _low_confidence_result())
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	worker.run()
+	assert results[0]["skip_reason"] == "No confident match on YouTube Music (best score 0.40)"

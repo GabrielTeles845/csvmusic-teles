@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from csvmusic.core.spotify_import import parse_spotify_source
-from csvmusic.core.downloader import is_age_restriction_error, sanitize_name, write_m3u
+from csvmusic.core.downloader import is_age_restriction_error, keep_previous_copy, sanitize_name, write_m3u
 from csvmusic.core.track_output import expected_track_path, library_format
 from csvmusic.core.youtube_music_import import parse_youtube_music_source
 from csvmusic.core.apple_music_import import parse_apple_music_source_url
@@ -354,6 +354,8 @@ def merge_playlist_scan(
 		track["downloaded_path"] = old_downloaded_path or None
 		track["low_confidence_review"] = bool(old.get("low_confidence_review", False))
 		track["download_confidence"] = old.get("download_confidence")
+		track["downloaded_duration_ms"] = old.get("downloaded_duration_ms") or None
+		track["review_reason"] = old.get("review_reason") or None
 		for field in _SKIP_FIELDS:
 			track[field] = old.get(field) or None
 		track["failure_kind"] = old.get("failure_kind") or None
@@ -496,6 +498,9 @@ def apply_library_download_result(
 	confidence: float | None = None,
 	skipped: bool = False,
 	skip_reason: str | None = None,
+	failure_kind: str | None = None,
+	downloaded_duration_ms: int | None = None,
+	duration_needs_review: bool = False,
 ) -> dict | None:
 	"""Apply one download outcome to the in-memory library and return the stored track (None if not found).
 
@@ -521,8 +526,10 @@ def apply_library_download_result(
 		stored["downloaded_video_publisher"] = (
 			(match or {}).get("author") or (match or {}).get("artists") or stored.get("downloaded_video_publisher")
 		)
-		stored["low_confidence_review"] = bool(low_confidence)
+		stored["low_confidence_review"] = bool(low_confidence or duration_needs_review)
 		stored["download_confidence"] = confidence
+		stored["downloaded_duration_ms"] = int(downloaded_duration_ms) if downloaded_duration_ms else None
+		stored["review_reason"] = _length_review_reason(stored, downloaded_duration_ms) if duration_needs_review else None
 		stored["filename_prefix_number"] = track.get("filename_prefix_number") or None
 		stored["filename_prefix_width"] = track.get("filename_prefix_width") or None
 		stored["audio_processing_signature"] = track.get("audio_processing_signature") or None
@@ -539,6 +546,8 @@ def apply_library_download_result(
 				try:
 					old_resolved = old_path.resolve()
 					if old_resolved != downloaded_file.resolve() and old_resolved.is_relative_to(output_root) and old_resolved.is_file():
+						# Renamed song: the old file goes to the internal trash, never straight to deletion.
+						keep_previous_copy(old_resolved)
 						old_resolved.unlink()
 				except (OSError, RuntimeError):
 					pass
@@ -546,12 +555,21 @@ def apply_library_download_result(
 	elif error:
 		stored["last_error"] = str(error).strip()[:4000]
 		stored["last_error_at"] = _now()
-		stored["failure_kind"] = download_failure_kind(error)
+		stored["failure_kind"] = failure_kind or download_failure_kind(error)
 	elif skipped:
 		stored["skip_state"] = SKIP_NOT_FOUND_ON_YOUTUBE
 		stored["skip_reason"] = str(skip_reason or "No confident match on YouTube Music").strip()[:500]
 		stored["skipped_at"] = _now()
 	return stored
+
+
+def _length_review_reason(stored: dict, downloaded_duration_ms: int | None) -> str:
+	expected_s = int(round((stored.get("duration_ms") or 0) / 1000))
+	actual_s = int(round((downloaded_duration_ms or 0) / 1000))
+	if expected_s <= 0 or actual_s <= 0:
+		return "Length could not be confirmed"
+	difference = actual_s - expected_s
+	return f"File is {abs(difference)} s {'longer' if difference > 0 else 'shorter'} than the song"
 
 
 SKIP_NOT_FOUND_ON_YOUTUBE = "not_found_on_youtube"

@@ -495,7 +495,8 @@ class PipelineWorker(QThread):
 					elif not length_ok_options:
 						reason = "No result with the right length"
 					else:
-						reason = "No confident match"
+						reason = f"No confident match on YouTube Music (best score {float(confidence or 0.0):.2f})"
+					payload["skip_reason"] = reason
 					skipped_tracks.append({"track": t, "reason": reason, "options": options})
 					self.sig_row_status.emit(row_idx, status)
 					processed += 1
@@ -548,6 +549,8 @@ class PipelineWorker(QThread):
 					cancelled = True
 				except Exception as e:
 					err = str(e)
+					if isinstance(e, AgeRestrictedError):
+						payload["failure_kind"] = "age_restricted"
 					risk_reason = e.reason if isinstance(e, YouTubeRiskError) else detect_youtube_risk(err)
 					retried = False
 					if risk_reason and self._mitigation.label != YOUTUBE_MITIGATION_AGGRESSIVE.label:
