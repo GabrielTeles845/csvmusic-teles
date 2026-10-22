@@ -102,6 +102,24 @@ def test_clear_access_error_reports_whether_anything_changed():
 	assert library["playlists"][0]["access_error_message"] is None
 
 
+def test_age_restricted_failure_is_named_and_cleared_on_success():
+	from csvmusic.core.downloader import AgeRestrictedError, age_restriction_message
+	from csvmusic.core.library import age_restricted_targets, apply_library_download_result, enabled_tracks
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a", "b"))
+	track = enabled_tracks(library)[1]
+	error = str(AgeRestrictedError(age_restriction_message(using_cookies=True)))
+
+	stored = apply_library_download_result(library, PLAYLIST_ID, track, downloaded=False, error=error)
+	assert stored["failure_kind"] == "age_restricted"
+	assert age_restricted_targets([{"track": track, "error": error}, {"track": enabled_tracks(library)[0], "error": "HTTP 500"}]) == {(PLAYLIST_ID, 1)}
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a", "b"))
+	assert library["playlists"][0]["tracks"][1]["failure_kind"] == "age_restricted"
+
+	stored = apply_library_download_result(library, PLAYLIST_ID, track, downloaded=True, match={"videoId": "v"})
+	assert stored["failure_kind"] is None
+
+
 def _songs(*ids: str) -> list[dict]:
 	return [{"id": song_id, "title": f"Song {song_id}", "artists": "Artist"} for song_id in ids]
 

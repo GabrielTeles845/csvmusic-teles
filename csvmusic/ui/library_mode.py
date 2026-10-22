@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from csvmusic.core.library import (
-	add_playlist_urls, adjust_status_counts, apply_library_download_result, backup_library_file, clear_playlist_access_error,
+	FAILURE_AGE_RESTRICTED, add_playlist_urls, adjust_status_counts, age_restricted_targets, apply_library_download_result,
+	backup_library_file, clear_playlist_access_error,
 	describe_skip, edit_library_track, enabled_tracks, export_csv,
 	find_library_track, library_status, library_track_path, load_library,
 	import_csv_playlist, mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id,
@@ -1478,6 +1479,8 @@ class LibraryModeDialog(QDialog):
 		self.library_save_timer.timeout.connect(self._flush_library)
 		self.download_track_states: dict[tuple[str, int], str] = {}
 		self.download_m3u_tracks: list[dict] = []
+		self.age_restricted_pending: set[tuple[str, int]] = set()
+		self.age_session_worker = None
 		self.download_m3u_pending: set[str] = set()
 		self.download_m3u_count = 0
 		self.download_row_targets: dict[int, tuple[str, int]] = {}
@@ -1856,6 +1859,11 @@ class LibraryModeDialog(QDialog):
 		self.download_detail.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 		self.download_detail.setStyleSheet("color: #404040; font-size: 11px;")
 		download_layout.addWidget(self.download_detail)
+		self.age_restricted_button = QPushButton()
+		self.age_restricted_button.setVisible(False)
+		self.age_restricted_button.setToolTip("Age-restricted songs need a signed-in YouTube session to download")
+		self.age_restricted_button.clicked.connect(self._resolve_age_restricted)
+		download_layout.addWidget(self.age_restricted_button, 0, Qt.AlignLeft)
 		download_buttons = QHBoxLayout()
 		self.download_button = QPushButton("Download")
 		self.download_button.setIcon(_download_icon())
@@ -3009,8 +3017,11 @@ class LibraryModeDialog(QDialog):
 		file_exists = audio_path.exists()
 		quality = audio_quality(audio_path) if file_exists else None
 		not_found = bool(track.get("skip_state")) and not file_exists and not has_error
+		age_restricted = has_error and track.get("failure_kind") == FAILURE_AGE_RESTRICTED
 		if needs_review:
 			state = "Review"
+		elif age_restricted:
+			state = "Age limit"
 		elif has_error:
 			state = "Error"
 		elif track.get("force_redownload"):
@@ -3030,6 +3041,8 @@ class LibraryModeDialog(QDialog):
 			else f'Downloaded: "{downloaded_title}"' if downloaded_title
 			else ""
 		)
+		if age_restricted:
+			youtube_info = "Age-restricted: needs a YouTube sign-in"
 		if not_found:
 			skipped_on = str(track.get("skipped_at") or "")[:10]
 			youtube_info = f"Skipped: {track.get('skip_reason') or 'no confident match'}" + (f" ({skipped_on})" if skipped_on else "")
@@ -3120,7 +3133,7 @@ class LibraryModeDialog(QDialog):
 		)
 		card_layout.addWidget(status_icon)
 		if has_error:
-			state_label = QPushButton("Error")
+			state_label = QPushButton(state)
 			state_label.setToolTip("View the saved download error")
 			state_label.clicked.connect(lambda _checked=False, source=track: self._show_track_error(source))
 		else:
@@ -3517,7 +3530,7 @@ class LibraryModeDialog(QDialog):
 			export_csv(path, self.library, self._selected_ids() or None)
 			self.status.setText(f"Exported enabled tracks to {path}")
 
-	def _start_download(self, *, missing_only: bool = False) -> None:
+	def _start_download(self, *, missing_only: bool = False, only_targets: set[tuple[str, int]] | None = None) -> None:
 		if self._downloads_running():
 			return
 		if self._scan_running():
@@ -3576,6 +3589,11 @@ class LibraryModeDialog(QDialog):
 			tracks, output_path, fmt, audio_signature=audio_signature,
 			audio_enabled=bool(audio), prefix_numbers=prefix_numbers, missing_only=missing_only,
 		)
+		if only_targets is not None:
+			tracks = [
+				track for track in tracks
+				if (str(track.get("library_playlist_id") or ""), int(track.get("library_track_index", -1))) in only_targets
+			]
 		if not tracks:
 			message = (
 				"There are no missing tracks in the library."
@@ -3657,6 +3675,7 @@ class LibraryModeDialog(QDialog):
 		self.download_worker.sig_done.connect(self._download_done)
 		self.download_button.setEnabled(False)
 		self.stop_download_button.setEnabled(True)
+		self.age_restricted_button.setVisible(False)
 		self._set_library_lists_locked(True)
 		self.load_more_tracks_button.setEnabled(False)
 		self.download_target.setText(f"Downloading playlist: {target_text}")
@@ -3827,6 +3846,85 @@ class LibraryModeDialog(QDialog):
 		self.download_m3u_count = 0
 		self._flush_library()
 		self._refresh()
+		self._show_age_restricted_action(failed)
+
+	def _show_age_restricted_action(self, failed: list) -> None:
+		"""After a batch: count age-restricted songs and offer the existing YouTube sign-in in one click."""
+		self.age_restricted_pending = age_restricted_targets(failed)
+		count = len(self.age_restricted_pending)
+		if not count:
+			self.age_restricted_button.setVisible(False)
+			return
+		cfg = load_settings()
+		songs = "song" if count == 1 else "songs"
+		has_session = bool(str(cfg.get("cookies_file") or "").strip())
+		if has_session and not cfg.get("use_cookies"):
+			self.age_restricted_button.setText(f"Use my YouTube session for {count} age-restricted {songs}")
+		else:
+			self.age_restricted_button.setText(f"Sign in to YouTube for {count} age-restricted {songs}…")
+		self.age_restricted_button.setVisible(True)
+		self.download_detail.setText(f"{self.download_detail.text()} • Age-restricted {count}")
+
+	def _resolve_age_restricted(self) -> None:
+		cfg = load_settings()
+		cookie_path = str(cfg.get("cookies_file") or "").strip()
+		if cookie_path and not cfg.get("use_cookies"):
+			# A saved session exists but is switched off: switch it on instead of asking to sign in again.
+			save_settings({"use_cookies": True})
+			log("library age-restricted: enabled the saved YouTube session")
+		else:
+			from csvmusic.ui.youtube_popup import YouTubePopupDialog
+			dialog = YouTubePopupDialog(self)
+			accepted = dialog.exec() == QDialog.Accepted and bool(dialog.cookie_path)
+			cookie_path = str(dialog.cookie_path or "") if accepted else ""
+			dialog.deleteLater()
+			if not cookie_path:
+				return
+			save_settings({"cookies_file": cookie_path, "use_cookies": True, "cookies_browser": None})
+			log("library age-restricted: signed in to YouTube")
+		self._verify_session_for_age_retry(cookie_path)
+
+	def _verify_session_for_age_retry(self, cookie_path: str) -> None:
+		from csvmusic.ui.workers import YouTubeSessionTestWorker
+		if self.age_session_worker is not None:
+			return
+		self.age_restricted_button.setEnabled(False)
+		self.youtube_account_status.setText("YouTube account: checking session…")
+		worker = YouTubeSessionTestWorker(cookie_path, self)
+		self.age_session_worker = worker
+		worker.sig_done.connect(self._age_retry_session_result)
+		worker.finished.connect(self._age_session_worker_finished)
+		worker.finished.connect(worker.deleteLater)
+		worker.start()
+
+	def _age_session_worker_finished(self) -> None:
+		self.age_session_worker = None
+		self.age_restricted_button.setEnabled(True)
+
+	def _age_retry_session_result(self, ok: bool, message: str) -> None:
+		save_settings({"cookies_test_ok": bool(ok)})
+		self.youtube_account_status.setText("YouTube account: ✓ confirmed" if ok else "YouTube account: not verified — check Settings → YouTube Account")
+		self.youtube_account_status.setToolTip(message)
+		if not ok:
+			QMessageBox.warning(self, "YouTube Session Not Confirmed", message)
+			return
+		targets = set(self.age_restricted_pending)
+		if not targets:
+			return
+		count = len(targets)
+		answer = QMessageBox.question(
+			self, "Download Age-Restricted Songs",
+			f"YouTube confirmed your session. Download the {count} age-restricted song{'s' if count != 1 else ''} again now, using it?",
+			QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+		)
+		if answer != QMessageBox.Yes:
+			return
+		self.playlist_tree.clearSelection()
+		for playlist_key in {key for key, _index in targets}:
+			item = self.playlist_items.get(playlist_key)
+			if item is not None:
+				item.setSelected(True)
+		self._start_download(only_targets=targets)
 
 	def _stop_download(self) -> None:
 		if self.download_worker and self.download_worker.isRunning():

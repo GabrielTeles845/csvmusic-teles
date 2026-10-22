@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from csvmusic.core.spotify_import import parse_spotify_source
-from csvmusic.core.downloader import sanitize_name, write_m3u
+from csvmusic.core.downloader import is_age_restriction_error, sanitize_name, write_m3u
 from csvmusic.core.track_output import expected_track_path, library_format
 from csvmusic.core.youtube_music_import import parse_youtube_music_source
 from csvmusic.core.apple_music_import import parse_apple_music_source_url
@@ -356,6 +356,7 @@ def merge_playlist_scan(
 		track["download_confidence"] = old.get("download_confidence")
 		for field in _SKIP_FIELDS:
 			track[field] = old.get(field) or None
+		track["failure_kind"] = old.get("failure_kind") or None
 		merged.append(track)
 	old_positions = {id(old): index for index, old in enumerate(playlist.get("tracks", []))}
 	unseen = [old for key, old in previous.items() if key not in seen]
@@ -513,6 +514,7 @@ def apply_library_download_result(
 		stored["force_redownload"] = False
 		stored["last_error"] = None
 		stored["last_error_at"] = None
+		stored["failure_kind"] = None
 		stored["last_downloaded_at"] = _now()
 		stored["downloaded_video_id"] = (match or {}).get("videoId") or stored.get("downloaded_video_id")
 		stored["downloaded_video_title"] = (match or {}).get("title") or stored.get("downloaded_video_title")
@@ -544,6 +546,7 @@ def apply_library_download_result(
 	elif error:
 		stored["last_error"] = str(error).strip()[:4000]
 		stored["last_error_at"] = _now()
+		stored["failure_kind"] = download_failure_kind(error)
 	elif skipped:
 		stored["skip_state"] = SKIP_NOT_FOUND_ON_YOUTUBE
 		stored["skip_reason"] = str(skip_reason or "No confident match on YouTube Music").strip()[:500]
@@ -558,6 +561,30 @@ _SKIP_FIELDS = ("skip_state", "skip_reason", "skipped_at")
 def _clear_skip(stored: dict) -> None:
 	for field in _SKIP_FIELDS:
 		stored[field] = None
+
+
+FAILURE_AGE_RESTRICTED = "age_restricted"
+
+
+def download_failure_kind(error: str | None) -> str | None:
+	"""Name failures the user can act on. Today only age restriction (needs a signed-in YouTube session)."""
+	if error and is_age_restriction_error(str(error)):
+		return FAILURE_AGE_RESTRICTED
+	return None
+
+
+def age_restricted_targets(failed: list[dict]) -> set[tuple[str, int]]:
+	"""(playlist key, song index) of the batch's failures caused by age restriction.
+
+	`failed` is the worker's list of {"track": ..., "error": ...}; library tracks carry their ids.
+	"""
+	targets: set[tuple[str, int]] = set()
+	for entry in failed or []:
+		track = entry.get("track") or {}
+		if download_failure_kind(entry.get("error")) != FAILURE_AGE_RESTRICTED or not track.get("library_playlist_id"):
+			continue
+		targets.add((str(track["library_playlist_id"]), int(track.get("library_track_index", -1))))
+	return targets
 
 
 def describe_skip(options: list | None, confidence: float | None) -> str:

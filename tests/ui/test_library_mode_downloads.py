@@ -161,6 +161,90 @@ def test_unreadable_library_is_copied_and_never_overwritten(monkeypatch, tmp_pat
 		QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
+def _age_restricted_error() -> str:
+	from csvmusic.core.downloader import AgeRestrictedError, age_restriction_message
+	return str(AgeRestrictedError(age_restriction_message(using_cookies=False)))
+
+
+def _settings_store(monkeypatch, initial: dict) -> dict:
+	cfg = dict(initial, hide_startup_disclaimer=True)
+	monkeypatch.setattr(library_mode, "load_settings", lambda: dict(cfg))
+	monkeypatch.setattr(library_mode, "save_settings", cfg.update)
+	return cfg
+
+
+def test_age_restricted_failure_is_saved_and_shown_on_the_row(library_dialog):
+	dialog, path, output = library_dialog
+	dialog.download_row_targets = {4: ("spotify:big", 4)}
+	track = enabled_tracks(dialog.library, {"spotify:big"})[4]
+
+	dialog._download_track_result(4, {"track": track, "downloaded": False, "error": _age_restricted_error(), "skipped": False})
+
+	assert dialog.track_state_labels[("spotify:big", 4)].text() == "Age limit"
+	dialog._flush_library()
+	assert load_library(path)["playlists"][0]["tracks"][4]["failure_kind"] == "age_restricted"
+
+
+def test_batch_end_offers_to_switch_on_a_saved_session(library_dialog, monkeypatch):
+	dialog, path, output = library_dialog
+	cfg = _settings_store(monkeypatch, {"cookies_file": "/session/cookies.txt", "use_cookies": False})
+	verified: list[str] = []
+	monkeypatch.setattr(dialog, "_verify_session_for_age_retry", verified.append)
+	track = enabled_tracks(dialog.library, {"spotify:big"})[4]
+
+	dialog._download_done("All tasks finished.", [], [], [{"track": track, "error": _age_restricted_error()}])
+
+	assert not dialog.age_restricted_button.isHidden()
+	assert dialog.age_restricted_button.text() == "Use my YouTube session for 1 age-restricted song"
+	assert "Age-restricted 1" in dialog.download_detail.text()
+	dialog.age_restricted_button.click()
+	assert cfg["use_cookies"] is True
+	assert verified == ["/session/cookies.txt"]
+
+
+def test_without_a_session_the_existing_sign_in_opens(library_dialog, monkeypatch):
+	from PySide6.QtWidgets import QDialog
+	from csvmusic.ui import youtube_popup
+	dialog, path, output = library_dialog
+	cfg = _settings_store(monkeypatch, {})
+	verified: list[str] = []
+	monkeypatch.setattr(dialog, "_verify_session_for_age_retry", verified.append)
+
+	class _FakePopup:
+		def __init__(self, parent=None):
+			self.cookie_path = "/new/cookies.txt"
+
+		def exec(self):
+			return QDialog.Accepted
+
+		def deleteLater(self):
+			pass
+
+	monkeypatch.setattr(youtube_popup, "YouTubePopupDialog", _FakePopup)
+	track = enabled_tracks(dialog.library, {"spotify:big"})[4]
+	dialog._download_done("All tasks finished.", [], [], [{"track": track, "error": _age_restricted_error()}])
+	assert dialog.age_restricted_button.text() == "Sign in to YouTube for 1 age-restricted song…"
+
+	dialog.age_restricted_button.click()
+
+	assert cfg["cookies_file"] == "/new/cookies.txt" and cfg["use_cookies"] is True
+	assert verified == ["/new/cookies.txt"]
+
+
+def test_confirmed_session_downloads_only_the_age_restricted_songs(library_dialog, monkeypatch):
+	dialog, path, output = library_dialog
+	_settings_store(monkeypatch, {"cookies_file": "/session/cookies.txt", "use_cookies": True})
+	started: list[dict] = []
+	monkeypatch.setattr(library_mode.QMessageBox, "question", lambda *args, **kwargs: library_mode.QMessageBox.Yes)
+	monkeypatch.setattr(dialog, "_start_download", lambda **kwargs: started.append(kwargs))
+	dialog.age_restricted_pending = {("spotify:big", 4), ("spotify:big", 7)}
+
+	dialog._age_retry_session_result(True, "PASS")
+
+	assert started == [{"only_targets": {("spotify:big", 4), ("spotify:big", 7)}}]
+	assert dialog.playlist_items["spotify:big"].isSelected()
+
+
 def _mark_private(dialog) -> None:
 	from csvmusic.core.library import mark_playlist_access_error
 	mark_playlist_access_error(dialog.library, "spotify:big", "private", "Playlist is private.")
