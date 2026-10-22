@@ -40,3 +40,7 @@ tmp_ytdlp_test/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Fork pessoal
+CLAUDE.local.md
+revisao/
