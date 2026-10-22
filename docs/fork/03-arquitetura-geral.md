@@ -88,6 +88,18 @@ Tudo isso roda dentro de uma `QThread` (`PipelineWorker`, `ui/workers.py:143`), 
 | `youtube_login.py`, `youtube_popup.py` | 105 / 164 | login no YouTube |
 | `theme.py` | 84 | tema retrô, fonte Comic |
 
+> Desde 22/10/2026 a janela principal é a interface web (doc 14). `library_mode.py`, `main_window.py`, `device_sync.py`, `theme.py` e `spotify_api_test.py` só continuam no repositório até a tela nova ser conferida; o app novo não importa nenhum deles.
+
+### `csvmusic/engine/` e `csvmusic/web/` — interface nova (doc 14)
+| Arquivo | O que faz |
+|---|---|
+| `engine/engine.py` | motor sem widgets: biblioteca em memória, análise, download, conta do YouTube, aparelhos, ajustes, lixeira |
+| `engine/views.py`, `engine/texts.py` | objetos da API (playlist, música, contagens) e frases da tela em português |
+| `engine/trash.py`, `engine/workers.py` | Lixeira do macOS e lixeira interna; leitura direta das fontes, fila do download, threads dos aparelhos |
+| `web/server.py`, `web/bridge.py` | servidor HTTP local (127.0.0.1, token, SSE, proxy de capas) e ponte para a thread do Qt |
+| `web/native.py` | janelas nativas que o motor pede (seletor de pasta, login do Google, leitor do Spotify, Finder) |
+| `web/static/` | a página (HTML, CSS, JS, sem etapa de build) |
+
 ### `resources/`, `licenses/`, `tests/`
 - `resources/`: ícones, splash (não usado mais), fontes (Comic Neue, VCR OSD Mono). **ffmpeg, deno e o ajudante do iPod NÃO estão no git** — o CI baixa/compila na hora do release.
 - `licenses/`: só `ComicNeue-OFL.txt` (o CI adiciona as do Deno e FFmpeg).
@@ -125,6 +137,8 @@ Externos: **ffmpeg** (com libmp3lame), **Deno 2.3+ ou Node 22+** (o yt-dlp preci
 7. `apply_retro_theme(app)` — estilo Fusion + paleta clara fixa + fonte Comic.
 8. Abre o `LibraryModeDialog` (janela principal). O botão de modo legado cria `MainWindow`s guardadas em `legacy_windows`.
 9. Código morto: `probe_ffmpeg()` e `show_qt_splash()` (`app.py:79-128`).
+
+**Desde 22/10/2026 (doc 14):** os passos 1–4 continuam; depois disso `app.py` importa o QtWebEngine, cria o `QApplication` (o `--smoke-test` segue igual), o `Engine` (`csvmusic/engine/`), o `WebServer` (127.0.0.1, porta `web_port`, padrão 8765, ou outra livre) e a `MainWindow` (`QMainWindow` + `QWebEngineView` no endereço local, menu nativo do Mac). Um segundo depois confere a sessão salva do YouTube. Fechar a janela (ou ⌘Q) para o download, cancela a análise sem gravar o parcial, grava a biblioteca e as configurações e desliga o servidor. Saíram o tema retrô, o `LibraryModeDialog` e o código morto.
 
 ---
 
