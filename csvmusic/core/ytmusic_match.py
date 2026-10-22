@@ -440,6 +440,49 @@ def find_best(yt: YTMusic, track: Dict) -> Tuple[Optional[Dict], float, List[Dic
 	best, score = _best_option(options)
 	return best, score, options
 
+def _format_seconds(seconds: int) -> str:
+	if seconds <= 0:
+		return "?"
+	return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _describe_option(option: Dict) -> str:
+	title = option.get("title") or ""
+	author = _candidate_artist_text(option)
+	length = _format_seconds(_duration_s(option.get("duration_seconds")))
+	score = float(option.get("score", 0.0) or 0.0)
+	flags = [str(option.get("source") or "?"), length, f"score {score:.2f}"]
+	if option.get("duration_mismatch"):
+		flags.append("duration_mismatch")
+	return f"'{title}' by '{author}' ({option.get('videoId')}; {', '.join(flags)})"
+
+
+def skip_log_line(track: Dict, confidence: float, options: List[Dict], error: str | None = None) -> str:
+	"""Describe a skipped track with the queries actually sent and the best candidate."""
+	title = track.get("title") or ""
+	artists = track.get("artists") or ""
+	length = _format_seconds(_track_duration_s(track))
+	if error:
+		reason = f"error={error}"
+	elif not options:
+		reason = "no search results"
+	elif all(option.get("duration_mismatch") for option in options):
+		reason = "every result has the wrong length"
+	else:
+		reason = f"no candidate >= {CONFIDENCE_MIN:.2f} (confidence={confidence:.2f})"
+	parts = [
+		f"match skip: '{title}' by '{artists}' (length {length}): {reason}",
+		f"queries={_query_variants(track)!r}",
+	]
+	fitting = [option for option in options if not option.get("duration_mismatch")]
+	if fitting:
+		parts.append(f"best={_describe_option(fitting[0])}")
+	mismatched = [option for option in options if option.get("duration_mismatch")]
+	if mismatched:
+		parts.append(f"best_wrong_length={_describe_option(mismatched[0])}")
+	return " | ".join(parts)
+
+
 def more_candidates(track: Dict, exclude_ids: Set[str] | None = None, limit: int = ALT_SEARCH_LIMIT, source_mode: SearchSource = "all") -> List[Dict]:
 	exclude = set(exclude_ids or [])
 	yt = YTMusic()

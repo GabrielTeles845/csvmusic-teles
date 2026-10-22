@@ -253,3 +253,19 @@ def test_force_download_never_picks_wrong_length_result(monkeypatch, tmp_path):
 	assert calls == []
 	assert results[0]["skipped"] is True
 	assert results[0]["forced_match"] is False
+
+
+def test_skipped_track_logs_real_queries_and_best_candidate(monkeypatch, tmp_path):
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.tracks_override[0]["title"] = "Complicated - 2002 Remaster"
+	lines = []
+	monkeypatch.setattr(workers, "log", lines.append)
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: _low_confidence_result())
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	worker.run()
+
+	skip_lines = [line for line in lines if line.startswith("match skip:")]
+	assert len(skip_lines) == 1
+	assert "'Complicated Avril Lavigne'" in skip_lines[0]
+	assert "best='Complicated' by 'Avril Lavigne' (test-video;" in skip_lines[0]

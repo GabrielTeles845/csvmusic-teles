@@ -12,7 +12,7 @@ from ytmusicapi import YTMusic
 from csvmusic.core.csv_import import load_csv, tracks_from_csv
 from csvmusic.core.url_import import fetch_music_url
 from csvmusic.core.log import log
-from csvmusic.core.ytmusic_match import find_best, more_candidates, RATE_LIMIT_S, CONFIDENCE_MIN
+from csvmusic.core.ytmusic_match import find_best, more_candidates, skip_log_line, RATE_LIMIT_S, CONFIDENCE_MIN
 from csvmusic.core.downloader import (
 	download_m4a, download_mp3, download_opus, tag_file, yt_thumbnail_bytes, cover_art_url_bytes, write_m3u, sanitize_name,
 	youtube_batch_mitigation, build_ytdlp_mitigation_args, detect_youtube_risk,
@@ -408,15 +408,14 @@ class PipelineWorker(QThread):
 					payload["forced_match"] = True
 
 				if match is None:
+					log(skip_log_line(t, confidence, options, search_error))
 					if search_error:
-						log(f"match skip: query='{t['title']} {t['artists']}' error={search_error}")
 						status = f"Search failed: {search_error[:100]}"
 					elif not options:
 						status = "Skipped (no search results)"
 					elif not length_ok_options:
 						status = "Skipped (wrong length)"
 					else:
-						log(f"match skip: query='{t['title']} {t['artists']}' no candidate >= threshold (confidence={confidence:.2f})")
 						status = "Skipped (low confidence)"
 					payload["skipped"] = True
 					payload["error"] = search_error

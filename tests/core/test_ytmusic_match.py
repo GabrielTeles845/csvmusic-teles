@@ -329,3 +329,26 @@ def test_bare_mix_is_not_a_remix():
 	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
 	mix = {"title": "Song (2009 Mix)", "artists": [{"name": "Artist"}], "duration_seconds": 200, "source": "music"}
 	assert ytmusic_match._score(track, mix) >= 0.9
+
+
+def test_skip_log_line_shows_real_queries_and_best_candidate():
+	track = {"title": "Country House - 2012 Remaster", "artists": "Blur", "duration_ms": 241000}
+	options = [
+		{"videoId": "abc", "title": "Country House", "artists": [{"name": "Blur"}], "duration_seconds": 241, "source": "music", "score": 0.55},
+		{"videoId": "zzz", "title": "Country House (Live)", "author": "Blur", "duration_seconds": 330, "source": "videos", "score": 0.5, "duration_mismatch": True},
+	]
+	line = ytmusic_match.skip_log_line(track, 0.55, options)
+	assert "'Country House Blur'" in line
+	assert "'Country House 2012 Remaster Blur'" in line
+	assert "best='Country House' by 'Blur' (abc; music, 4:01, score 0.55)" in line
+	assert "best_wrong_length='Country House (Live)'" in line
+	assert "duration_mismatch" in line
+	assert "confidence=0.55" in line
+
+
+def test_skip_log_line_names_the_reason():
+	track = {"title": "Song", "artists": "Artist"}
+	assert "no search results" in ytmusic_match.skip_log_line(track, 0.0, [])
+	assert "error=boom" in ytmusic_match.skip_log_line(track, 0.0, [], "boom")
+	mismatch = [{"videoId": "x", "title": "Song", "score": 0.9, "duration_mismatch": True}]
+	assert "every result has the wrong length" in ytmusic_match.skip_log_line(track, 0.0, mismatch)
