@@ -7,7 +7,7 @@ import unicodedata
 from typing import Union, List, Dict, Optional
 import pandas as pd
 
-from csvmusic.core.durations import parse_duration
+from csvmusic.core.durations import parse_duration_column
 from csvmusic.core.log import log
 
 # Canonical column names we expect. Keys are compared after _norm_header():
@@ -241,7 +241,7 @@ def load_csv(path: Union[str, pathlib.Path]) -> pd.DataFrame:
 	if "Duration (ms)" in df.columns:
 		# "2:57", "1:02:57", seconds or milliseconds → (ms, precision in seconds)
 		unit = _duration_unit(duration_header)
-		parsed = [parse_duration(v, unit) for v in df["Duration (ms)"].tolist()]
+		parsed = parse_duration_column(df["Duration (ms)"].tolist(), unit)
 		df["Duration (ms)"] = [ms for ms, _ in parsed]
 		df["Duration precision (s)"] = [precision for _, precision in parsed]
 		df["Duration (ms)"] = df["Duration (ms)"].astype(int)
