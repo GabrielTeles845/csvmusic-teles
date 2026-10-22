@@ -88,3 +88,44 @@ def test_download_queue_does_not_skip_a_song_because_its_namesake_has_a_file(tmp
 		[first, second], tmp_path, "m4a", audio_signature="", audio_enabled=False, prefix_numbers=False, missing_only=True,
 	)
 	assert pending == [second]
+
+
+def _two_favoritas() -> dict:
+	library = L.new_library()
+	L.add_playlist_urls(library, [
+		"https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+		"https://open.spotify.com/playlist/0vvXsWCC9xrXsKd4FyS8kM",
+	])
+	return library
+
+
+_FIRST, _SECOND = "spotify:37i9dQZF1DXcBWIGoYBM5M", "spotify:0vvXsWCC9xrXsKd4FyS8kM"
+
+
+def test_two_playlists_with_the_same_name_get_separate_folders():
+	library = _two_favoritas()
+	L.merge_playlist_scan(library, _FIRST, "Favoritas", [{"title": "Um", "artists": "A"}])
+	L.merge_playlist_scan(library, _SECOND, "favoritas", [{"title": "Dois", "artists": "B"}])
+	names = [playlist["name"] for playlist in library["playlists"]]
+	assert names == ["Favoritas", "favoritas (2)"]
+	assert [track["playlist"] for track in L.enabled_tracks(library)] == names
+
+
+def test_numbered_name_stays_put_on_rescan():
+	library = _two_favoritas()
+	L.merge_playlist_scan(library, _FIRST, "Favoritas", [{"title": "Um", "artists": "A"}])
+	L.merge_playlist_scan(library, _SECOND, "Favoritas", [{"title": "Dois", "artists": "B"}])
+	L.merge_playlist_scan(library, _FIRST, "Favoritas", [{"title": "Um", "artists": "A"}])
+	L.merge_playlist_scan(library, _SECOND, "Favoritas", [{"title": "Dois", "artists": "B"}])
+	assert [playlist["name"] for playlist in library["playlists"]] == ["Favoritas", "Favoritas (2)"]
+	# The first one leaves: the second keeps its folder instead of jumping back to "Favoritas".
+	library["playlists"].pop(0)
+	L.merge_playlist_scan(library, _SECOND, "Favoritas", [{"title": "Dois", "artists": "B"}])
+	assert library["playlists"][0]["name"] == "Favoritas (2)"
+
+
+def test_names_that_only_match_after_sanitizing_also_collide():
+	library = _two_favoritas()
+	L.merge_playlist_scan(library, _FIRST, "Rock: 80s", [{"title": "Um", "artists": "A"}])
+	L.merge_playlist_scan(library, _SECOND, "Rock： 80s", [{"title": "Dois", "artists": "B"}])
+	assert library["playlists"][1]["name"] == "Rock： 80s (2)"

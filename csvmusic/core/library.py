@@ -293,6 +293,8 @@ def merge_playlist_scan(
 		old_track["playlist_occurrence"] = occurrence
 		previous[_track_key(old_track)] = old_track
 	effective_name = str(playlist.get("name") or name or "Spotify Playlist").strip() if playlist.get("custom_name") else str(name or playlist.get("name") or "Spotify Playlist").strip()
+	if not playlist.get("custom_name"):
+		effective_name = _unique_playlist_name(library, playlist, effective_name)
 	merged: list[dict] = []
 	seen: set[str] = set()
 	used_old: set[int] = set()
@@ -400,6 +402,34 @@ def merge_playlist_scan(
 		},
 	})
 	return playlist
+
+
+def _folder_key(name: str) -> str:
+	return unicodedata.normalize("NFC", sanitize_name(name) or "Playlist").casefold()
+
+
+def _unique_playlist_name(library: dict, playlist: dict, desired: str) -> str:
+	"""Name for `playlist` whose output folder (and M3U) no other playlist of the library uses.
+
+	A collision gets " (2)", " (3)"...; a playlist already holding one of those numbered names for the same
+	source name keeps it, so its folder does not move when the other playlist leaves or is renamed.
+	"""
+	taken = {
+		_folder_key(str(other.get("name") or "Playlist"))
+		for other in library.get("playlists", [])
+		if other is not playlist
+	}
+	current = str(playlist.get("name") or "").strip()
+	match = re.fullmatch(r"(.*) \((\d+)\)", current)
+	if match and _folder_key(match.group(1)) == _folder_key(desired) and int(match.group(2)) >= 2:
+		if _folder_key(current) not in taken:
+			return current
+	if _folder_key(desired) not in taken:
+		return desired
+	counter = 2
+	while _folder_key(f"{desired} ({counter})") in taken:
+		counter += 1
+	return f"{desired} ({counter})"
 
 
 def mark_playlist_access_error(library: dict, playlist_id: str, kind: str, message: str) -> dict | None:
