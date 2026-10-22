@@ -58,130 +58,175 @@ try:
 except Exception:
 	pass
 
-from PySide6.QtWidgets import QApplication, QSplashScreen
-from PySide6.QtGui import QPixmap, QIcon
-from PySide6.QtCore import Qt, QTimer
-from csvmusic.core.paths import (
-	ffmpeg_path,
-	splash_image_path,
-	app_icon_path,
-	resource_base,
-)
+# QtWebEngine precisa ser importado antes de criar o QApplication.
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence
+from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
+
 from csvmusic.core.log import log
-from csvmusic.core.subprocess_env import subprocess_kwargs
+from csvmusic.core.paths import app_icon_path
+from csvmusic.core.settings import load_settings
 from csvmusic.version import APP_VERSION
-# Qt WebEngine-backed Library Mode must be imported before QApplication is
-# constructed. Importing it afterward can deadlock Qt initialization on
-# Windows, leaving only the bootstrap window visible.
-from csvmusic.ui.library_mode import LibraryModeDialog
-from csvmusic.ui.theme import apply_retro_theme
 
-_WINDOWS = sys.platform.startswith("win")
 
-def probe_ffmpeg() -> None:
-	path = ffmpeg_path()
-	log(f"ffmpeg resolved to: {path}")
-	try:
-		subprocess.run(
-			[path, "-version"],
-			capture_output=True,
-			text=True,
-			encoding="utf-8",
-			errors="replace",
-			timeout=2,
-			**subprocess_kwargs()
-		)
-	except Exception:
-		pass
+class AppPage(QWebEnginePage):
+	"""Só o endereço local abre dentro do app; link de fora vai para o navegador do Mac."""
 
-def show_qt_splash(app: QApplication) -> QSplashScreen | None:
-	img_candidates: list[pathlib.Path] = []
-	primary = splash_image_path()
-	if primary:
-		img_candidates.append(primary)
-	base = resource_base()
-	for fallback_name in ("splash.png",):
-		candidate = base / fallback_name
-		if candidate not in img_candidates and candidate.exists():
-			img_candidates.append(candidate)
-	if not img_candidates:
-		log("Splash image missing; skipping Qt splash.")
-		return None
-	pixmap = QPixmap()
-	loaded_path = None
-	for path in img_candidates:
-		if pixmap.load(str(path)):
-			loaded_path = path
-			break
-	if loaded_path is None:
-		log("Splash image failed to load from candidates; skipping Qt splash.")
-		return None
-	log(f"Splash image loaded from {loaded_path}")
-	max_width = 720
-	max_height = 360
-	if pixmap.width() > max_width or pixmap.height() > max_height:
-		pixmap = pixmap.scaled(max_width, max_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-	splash = QSplashScreen(pixmap, Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
-	splash.show()
-	app.processEvents()
-	# A slow or failed main-window initialization must never leave an
-	# always-on-top splash stranded over the desktop.
-	QTimer.singleShot(8000, splash.close)
-	return splash
+	def __init__(self, origin: str, parent=None):
+		super().__init__(parent)
+		self.origin = origin.rstrip("/")
+
+	def acceptNavigationRequest(self, url: QUrl, navigation_type, is_main_frame: bool) -> bool:
+		text = url.toString()
+		if text == self.origin or text.startswith(self.origin + "/"):
+			return True
+		if url.scheme() in ("http", "https", "mailto"):
+			QDesktopServices.openUrl(url)
+		return False
+
+	def createWindow(self, _window_type):
+		# target="_blank": a página descartável manda o endereço para o navegador do Mac.
+		page = AppPage(self.origin, self)
+		page.urlChanged.connect(lambda url, temporary=page: (QDesktopServices.openUrl(url), temporary.deleteLater()))
+		return page
+
+
+class MainWindow(QMainWindow):
+	def __init__(self, engine, server, host):
+		super().__init__()
+		self.engine = engine
+		self.server = server
+		self.host = host
+		self._closing = False
+		self.setWindowTitle("CSVMusic")
+		self.resize(1280, 820)
+		self.view = QWebEngineView(self)
+		self.page = AppPage(server.url, self.view)
+		self.page.profile().downloadRequested.connect(self._download_requested)
+		self.view.setPage(self.page)
+		self.setCentralWidget(self.view)
+		self._build_menu()
+		self.view.setUrl(QUrl(server.url))
+
+	def _action(self, menu, text: str, slot, shortcut=None, role=None) -> QAction:
+		action = QAction(text, self)
+		if shortcut is not None:
+			action.setShortcut(shortcut)
+		if role is not None:
+			action.setMenuRole(role)
+		action.triggered.connect(slot)
+		menu.addAction(action)
+		return action
+
+	def _build_menu(self) -> None:
+		bar = self.menuBar()
+		app_menu = bar.addMenu("CSVMusic")
+		# No Mac, os papéis levam estas ações para o menu do app (CSVMusic › Sobre, Ajustes, Sair).
+		self._action(app_menu, "Sobre o CSVMusic", lambda: self._page_action("about"), role=QAction.AboutRole)
+		self._action(app_menu, "Ajustes…", lambda: self._page_action("settings"), QKeySequence.Preferences, QAction.PreferencesRole)
+		self._action(app_menu, "Sair do CSVMusic", self.close, QKeySequence.Quit, QAction.QuitRole)
+		file_menu = bar.addMenu("Arquivo")
+		self._action(file_menu, "Adicionar playlist", lambda: self._page_action("add_playlist"), QKeySequence.New)
+		self._action(file_menu, "Importar planilha…", self._import_csv)
+		file_menu.addSeparator()
+		self._action(file_menu, "Abrir biblioteca…", self._open_library)
+		self._action(file_menu, "Salvar biblioteca como…", self._save_library_as)
+		file_menu.addSeparator()
+		self._action(file_menu, "Abrir no navegador", lambda: QDesktopServices.openUrl(QUrl(self.server.url)))
+
+	def _page_action(self, action: str) -> None:
+		self.engine.emit("menu", {"action": action})
+
+	def _import_csv(self) -> None:
+		path = self.host.choose_file("csv")
+		if path:
+			self._run(lambda: self.engine.import_csv_path(path))
+
+	def _open_library(self) -> None:
+		path = self.host.choose_file("library")
+		if path:
+			self._run(lambda: self.engine.open_library(path))
+
+	def _save_library_as(self) -> None:
+		path = self.host.save_file("library", str(self.engine.library_path))
+		if path:
+			self._run(lambda: self.engine.save_library_as(path))
+
+	def _run(self, action) -> None:
+		from csvmusic.engine import EngineError
+		try:
+			action()
+		except EngineError as exc:
+			self.engine.warn(exc.message)
+
+	def _download_requested(self, download) -> None:
+		# Exportar planilha: o arquivo vem do servidor local; o Mac pergunta onde salvar.
+		suggested = str(pathlib.Path.home() / "Downloads" / (download.downloadFileName() or "playlist.csv"))
+		path, _ = QFileDialog.getSaveFileName(self, "Salvar planilha", suggested, "Planilha CSV (*.csv)")
+		if not path:
+			download.cancel()
+			return
+		target = pathlib.Path(path)
+		download.setDownloadDirectory(str(target.parent))
+		download.setDownloadFileName(target.name)
+		download.accept()
+
+	def shutdown_once(self) -> None:
+		"""Grava a biblioteca e desliga o servidor (uma vez só, venha de fechar a janela ou do Sair)."""
+		if self._closing:
+			return
+		self._closing = True
+		log("main window closing: saving library and stopping server")
+		try:
+			self.engine.shutdown()
+		finally:
+			self.server.stop()
+
+	def closeEvent(self, event) -> None:
+		# Fechar a janela grava a biblioteca e encerra o app.
+		self.shutdown_once()
+		super().closeEvent(event)
+		QApplication.instance().quit()
+
+
+def _smoke_test(app: QApplication) -> int:
+	# Testa os plugins do Qt e o WebEngine do pacote sem carregar biblioteca nem acessar a rede.
+	from PySide6.QtWidgets import QLabel
+	label = QLabel("CSVMusic startup check")
+	label.show()
+	page = QWebEnginePage()
+	page.loadFinished.connect(lambda ok: app.exit(0 if ok else 1))
+	QTimer.singleShot(15000, lambda: app.exit(2))
+	page.setHtml("<html><body>CSVMusic startup check</body></html>")
+	return app.exec()
+
 
 def main() -> int:
 	app = QApplication(sys.argv)
+	app.setApplicationName("CSVMusic")
+	app.setApplicationDisplayName("CSVMusic")
 	if "--smoke-test" in sys.argv:
-		# Exercise the packaged Qt plugins and WebEngine without loading the
-		# user's library, showing disclaimers, or starting network requests.
-		from PySide6.QtWebEngineCore import QWebEnginePage
-		from PySide6.QtWidgets import QLabel
-		apply_retro_theme(app)
-		label = QLabel("CSVMusic startup check")
-		label.show()
-		page = QWebEnginePage()
-		page.loadFinished.connect(lambda ok: app.exit(0 if ok else 1))
-		QTimer.singleShot(15000, lambda: app.exit(2))
-		page.setHtml("<html><body>CSVMusic startup check</body></html>")
-		return app.exec()
-	apply_retro_theme(app)
-	if _WINDOWS:
-		try:
-			import ctypes
-			ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CSVMusic.CSVMusic")
-		except Exception:
-			pass
+		return _smoke_test(app)
 	icon_path = app_icon_path()
 	if icon_path:
 		app.setWindowIcon(QIcon(str(icon_path)))
-		log(f"Application icon set from {icon_path}")
-	else:
-		log("Application icon missing; using default.")
-	# Library Mode is lightweight enough to open directly. Do not place an
-	# always-on-top splash or synchronous FFmpeg process in front of it; tool
-	# availability is checked by the existing download preflight when needed.
-
-	# Library Mode is the primary application. The legacy window remains
-	# available from Library Mode's header and shares the same core modules.
-	w = LibraryModeDialog()
-	legacy_windows = []
-
-	def _open_legacy_mode() -> None:
-		from csvmusic.ui.main_window import MainWindow
-		window = MainWindow()
-		window.show()
-		window.raise_()
-		window.activateWindow()
-		legacy_windows.append(window)
-
-	w.legacy_mode_requested.connect(_open_legacy_mode)
-	if icon_path:
-		w.setWindowIcon(QIcon(str(icon_path)))
-	else:
-		log("Library window icon fallback in use.")
-	w.setWindowTitle(f"CSVMusic Library Mode — v{APP_VERSION}")
-	w.show()
+	from csvmusic.engine import Engine
+	from csvmusic.web.native import NativeHost
+	from csvmusic.web.server import WebServer
+	host = NativeHost()
+	engine = Engine(host=host)
+	server = WebServer(engine, port=int(load_settings().get("web_port") or 8765))
+	server.start()
+	window = MainWindow(engine, server, host)
+	host.window = window
+	app.aboutToQuit.connect(window.shutdown_once)
+	window.show()
+	QTimer.singleShot(1000, engine.start_session_check)
+	log(f"CSVMusic {APP_VERSION} started web interface url={server.url}")
 	return app.exec()
+
 
 if __name__ == "__main__":
 	sys.exit(main())
