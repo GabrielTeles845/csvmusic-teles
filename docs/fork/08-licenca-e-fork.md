@@ -22,6 +22,17 @@
 2. Mantenha o **histórico do git** (autoria) e um aviso no README: "Fork pessoal de [angall1/CSVMusic](https://github.com/angall1/CSVMusic)".
 3. **Não apague** nada da pasta `licenses/`.
 
+### Decisão (22/10/2026): repositório privado
+
+O fork vai para um **repositório privado** no GitHub do Gabriel, não um fork público (fork do GitHub não pode ser privado). No clone local, o remoto do original passou a se chamar `upstream`, para trazer correções do autor com `git fetch upstream`. O remoto `origin` fica para o repositório privado, criado pelo Gabriel com:
+
+```
+gh repo create csvmusic-teles --private --source . --remote origin
+git push -u origin main
+```
+
+Como é privado e só para uso pessoal, a issue pedindo licença ao autor (recomendação 1) deixa de ser urgente; ela só volta se um dia houver distribuição.
+
 ## 2. Licenças das peças de terceiros (importam se distribuir binários)
 
 | Componente | Licença | Observação |
