@@ -78,12 +78,13 @@ def _pending_download_tracks(
 	audio_enabled: bool, prefix_numbers: bool, missing_only: bool = False,
 ) -> list[dict]:
 	"""Return rows needing work; Download All deliberately means missing files only."""
+	listing_cache: dict = {}
 	if missing_only:
-		return [track for track in tracks if not library_track_path(track, output_path, fmt).exists()]
+		return [track for track in tracks if not library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=tracks).exists()]
 	return [
 		track for track in tracks
 		if track.get("force_redownload")
-		or not library_track_path(track, output_path, fmt).exists()
+		or not library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=tracks).exists()
 		or (
 			audio_enabled
 			and bool(track.get("_previous_audio_processing_signature"))
@@ -3676,8 +3677,9 @@ class LibraryModeDialog(QDialog):
 			str(playlist.get("id")): len([track for track in playlist.get("tracks", []) if track.get("enabled", True)])
 			for playlist in selected_playlists
 		}
+		listing_cache: dict = {}
 		for track in all_playlist_tracks:
-			existing_file = library_track_path(track, pathlib.Path(output), fmt)
+			existing_file = library_track_path(track, pathlib.Path(output), fmt, listing_cache=listing_cache, playlist_tracks=all_playlist_tracks)
 			if existing_file.is_file():
 				track["downloaded_path"] = str(existing_file)
 			track["_previous_audio_processing_signature"] = str(track.get("audio_processing_signature") or "")

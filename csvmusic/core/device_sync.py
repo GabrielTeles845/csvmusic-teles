@@ -125,7 +125,8 @@ def _ready_playlists(library: dict) -> tuple[list[tuple[dict, list[tuple[dict, p
 	for playlist in library.get("playlists", []):
 		name = str(playlist.get("name") or "Playlist")
 		tracks = [track for track in playlist.get("tracks", []) if track.get("enabled", True)]
-		resolved = [(track, library_track_path(track, root, fmt)) for track in tracks]
+		siblings = [dict(track, playlist=name) for track in tracks]
+		resolved = [(track, library_track_path(probe, root, fmt, playlist_tracks=siblings)) for track, probe in zip(tracks, siblings)]
 		# Never sync an existing-but-stale file while an alternative or audio
 		# change is still queued. The playlist becomes ready after Download
 		# successfully clears force_redownload.

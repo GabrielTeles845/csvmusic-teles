@@ -299,21 +299,32 @@ def merge_playlist_scan(
 	old_by_text: dict[str, list[dict]] = {}
 	for candidate in playlist.get("tracks", []):
 		old_by_text.setdefault(_track_text_key(candidate), []).append(candidate)
+	old_folder_name = str(playlist.get("name") or effective_name or "Playlist")
+	old_siblings = playlist_probes(dict(playlist, name=old_folder_name))
 	new_occurrences: dict[str, int] = {}
+	normalized: list[dict] = []
 	for position, raw in enumerate(tracks, start=1):
 		track = _normalized_track(raw, effective_name, position)
 		base_key = _track_base_key(track)
 		occurrence = int(raw.get("playlist_occurrence") or (new_occurrences.get(base_key, 0) + 1))
 		new_occurrences[base_key] = max(new_occurrences.get(base_key, 0), occurrence)
 		track["playlist_occurrence"] = occurrence
+		normalized.append(track)
+	# An old song that the scan still has under its own key is never handed to a namesake by text:
+	# the namesake would inherit its file, chosen video and lock.
+	claimed_by_key = {id(previous[_track_key(track)]) for track in normalized if _track_key(track) in previous}
+	for track in normalized:
 		key = _track_key(track)
 		if key in seen:
 			continue
 		seen.add(key)
 		old = previous.get(key, {})
 		if not old:
-			matching_old = old_by_text.get(_track_text_key(track), [])
-			if len(matching_old) == 1:
+			matching_old = [
+				candidate for candidate in old_by_text.get(_track_text_key(track), [])
+				if id(candidate) not in used_old and id(candidate) not in claimed_by_key
+			]
+			if len(matching_old) == 1 and len(old_by_text.get(_track_text_key(track), [])) == 1:
 				old = matching_old[0]
 		if old:
 			used_old.add(id(old))
@@ -347,8 +358,10 @@ def merge_playlist_scan(
 		old_downloaded_path = old.get("downloaded_path")
 		if not old_downloaded_path and old:
 			old_probe = dict(old)
-			old_probe["playlist"] = str(playlist.get("name") or effective_name or "Playlist")
-			candidate = library_track_path(old_probe, pathlib.Path(library.get("output_dir") or ""), library_format(library))
+			old_probe["playlist"] = old_folder_name
+			candidate = library_track_path(
+				old_probe, pathlib.Path(library.get("output_dir") or ""), library_format(library), playlist_tracks=old_siblings,
+			)
 			if candidate.is_file():
 				old_downloaded_path = str(candidate)
 		track["downloaded_path"] = old_downloaded_path or None
@@ -545,7 +558,14 @@ def apply_library_download_result(
 				output_root = pathlib.Path(library.get("output_dir") or "").resolve()
 				try:
 					old_resolved = old_path.resolve()
-					if old_resolved != downloaded_file.resolve() and old_resolved.is_relative_to(output_root) and old_resolved.is_file():
+					owned_by_other = any(
+						other is not stored and _same_file(other.get("downloaded_path"), old_resolved)
+						for other in playlist.get("tracks", [])
+					)
+					if (
+						old_resolved != downloaded_file.resolve() and old_resolved.is_relative_to(output_root)
+						and old_resolved.is_file() and not owned_by_other
+					):
 						# Renamed song: the old file goes to the internal trash, never straight to deletion.
 						keep_previous_copy(old_resolved)
 						old_resolved.unlink()
@@ -561,6 +581,16 @@ def apply_library_download_result(
 		stored["skip_reason"] = str(skip_reason or "No confident match on YouTube Music").strip()[:500]
 		stored["skipped_at"] = _now()
 	return stored
+
+
+def _same_file(value: Any, target: pathlib.Path) -> bool:
+	text = str(value or "").strip()
+	if not text:
+		return False
+	try:
+		return pathlib.Path(text).resolve() == target
+	except (OSError, RuntimeError):
+		return False
 
 
 def _length_review_reason(stored: dict, downloaded_duration_ms: int | None) -> str:
@@ -629,10 +659,12 @@ def track_status_counts(
 	output_dir: str | pathlib.Path,
 	fmt: str,
 	listing_cache: dict | None = None,
+	playlist_tracks: list[dict] | None = None,
 ) -> dict[str, int]:
 	"""Count one stored track the way library_status does (enabled/downloaded/missing/redownload).
 
 	A disabled song only counts as "disabled": it is never downloaded, so it is not "missing".
+	`playlist_tracks` goes to library_track_path (songs of the playlist, with "playlist" set to its name).
 	"""
 	status = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
 	if not track.get("enabled", True):
@@ -643,7 +675,7 @@ def track_status_counts(
 	probe["playlist"] = playlist_name
 	if track.get("force_redownload"):
 		status["redownload"] += 1
-	if library_track_path(probe, pathlib.Path(output_dir), fmt, listing_cache=listing_cache).exists():
+	if library_track_path(probe, pathlib.Path(output_dir), fmt, listing_cache=listing_cache, playlist_tracks=playlist_tracks).exists():
 		status["downloaded"] += 1
 	else:
 		status["missing"] += 1
@@ -682,8 +714,9 @@ def library_status(
 		status = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
 		name = playlist.get("name") or "Playlist"
 		per_track = track_counts.setdefault(key, {})
+		siblings = playlist_probes(playlist)
 		for track_index, stored in enumerate(playlist.get("tracks", [])):
-			counts = track_status_counts(stored, name, root, fmt, listing_cache)
+			counts = track_status_counts(stored, name, root, fmt, listing_cache, playlist_tracks=siblings)
 			per_track[track_index] = counts
 			for field, value in counts.items():
 				status[field] += value
@@ -794,10 +827,14 @@ def library_track_path(
 	fmt: str,
 	*,
 	listing_cache: dict | None = None,
+	playlist_tracks: list[dict] | None = None,
 ) -> pathlib.Path:
 	"""Resolve the file actually downloaded for a library row before its current expected filename.
 
 	Pass the same `listing_cache` dict to many calls in one pass so each playlist folder is listed once.
+	Pass `playlist_tracks` (the songs of the same playlist, or rows of several playlists) so a file without
+	the expected position prefix is only recovered when no other song there has the same artist and title:
+	otherwise one song would take the file of its namesake.
 	"""
 	stored = str(track.get("downloaded_path") or "").strip()
 	if stored:
@@ -817,7 +854,44 @@ def library_track_path(
 		if listing_cache is not None:
 			listing_cache[expected.parent] = listing
 	matches = listing.get(plain.name, [])
-	return matches[0] if len(matches) == 1 else expected
+	if len(matches) != 1:
+		return expected
+	if playlist_tracks is not None and _plain_name_key(track) in _shared_plain_names(playlist_tracks, listing_cache):
+		return expected
+	return matches[0]
+
+
+def playlist_probes(playlist: dict) -> list[dict]:
+	"""Copies of a playlist's songs carrying its current name, for `playlist_tracks=` in library_track_path."""
+	name = str(playlist.get("name") or "Playlist")
+	return [dict(track, playlist=name) for track in playlist.get("tracks", [])]
+
+
+def _plain_name_key(track: dict) -> tuple[str, str]:
+	"""Playlist folder and file name without position prefix (format left out), compared without case."""
+	folder = sanitize_name(str(track.get("playlist") or "Playlist"))
+	base = sanitize_name(f"{track.get('artists', '')} - {track.get('title', '')}")
+	return (
+		unicodedata.normalize("NFC", folder).casefold(),
+		unicodedata.normalize("NFC", base).casefold(),
+	)
+
+
+def _shared_plain_names(tracks: list[dict], listing_cache: dict | None = None) -> set[tuple[str, str]]:
+	"""Names (per playlist folder) that more than one song resolves to without its position prefix."""
+	cache_key = ("shared-plain-names", id(tracks))
+	if listing_cache is not None:
+		cached = listing_cache.get(cache_key)
+		if cached is not None and cached[0] is tracks:
+			return cached[1]
+	counts: dict[tuple[str, str], int] = {}
+	for other in tracks:
+		key = _plain_name_key(other)
+		counts[key] = counts.get(key, 0) + 1
+	shared = {key for key, count in counts.items() if count > 1}
+	if listing_cache is not None:
+		listing_cache[cache_key] = (tracks, shared)
+	return shared
 
 
 def _unprefixed_listing(folder: pathlib.Path) -> dict[str, list[pathlib.Path]]:

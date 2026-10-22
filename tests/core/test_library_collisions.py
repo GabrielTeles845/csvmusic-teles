@@ -1,0 +1,90 @@
+# tabs only
+"""Songs and playlists that share a name must never share files, state or folders."""
+import pathlib
+
+from csvmusic.core import library as L
+
+
+def _rock_library(root: pathlib.Path) -> tuple[dict, pathlib.Path]:
+	folder = root / "Rock"
+	folder.mkdir(parents=True)
+	album_file = folder / "01- Queen - Bohemian Rhapsody.m4a"
+	album_file.write_bytes(b"versao do album")
+	library = L.new_library(output_dir=str(root))
+	library["format"] = "m4a"
+	library["playlists"].append({"id": "p1", "platform": "spotify", "name": "Rock", "tracks": [{
+		"title": "Bohemian Rhapsody", "artists": "Queen", "album": "A Night at the Opera", "sp_id": "SP1", "playlist": "Rock",
+		"downloaded_path": str(album_file), "downloaded_video_id": "VID1", "preferred_video_id": "VID1",
+		"preferred_selection_locked": True, "filename_prefix_number": 1, "filename_prefix_width": 2,
+	}]})
+	return library, album_file
+
+
+def _scan(live_first: bool) -> list[dict]:
+	album = {"title": "Bohemian Rhapsody", "artists": "Queen", "album": "A Night at the Opera", "sp_id": "SP1"}
+	live = {"title": "Bohemian Rhapsody", "artists": "Queen", "album": "Live Aid", "sp_id": "SP2"}
+	return [live, album] if live_first else [album, live]
+
+
+def test_new_song_with_same_text_does_not_inherit_state_of_song_still_in_playlist(tmp_path):
+	for live_first in (False, True):
+		root = tmp_path / str(live_first)
+		library, album_file = _rock_library(root)
+		playlist = L.merge_playlist_scan(library, "spotify:p1", "Rock", _scan(live_first))
+		by_id = {track["sp_id"]: track for track in playlist["tracks"]}
+		assert by_id["SP1"]["downloaded_path"] == str(album_file)
+		assert by_id["SP1"]["preferred_selection_locked"] is True
+		live = by_id["SP2"]
+		assert live["downloaded_path"] is None
+		assert live["preferred_video_id"] is None
+		assert live["preferred_selection_locked"] is False
+
+
+def test_text_match_still_recovers_a_song_whose_id_changed(tmp_path):
+	library, album_file = _rock_library(tmp_path)
+	scan = [{"title": "Bohemian Rhapsody", "artists": "Queen", "album": "A Night at the Opera", "sp_id": "SP1-NEW"}]
+	playlist = L.merge_playlist_scan(library, "spotify:p1", "Rock", scan)
+	assert playlist["tracks"][0]["downloaded_path"] == str(album_file)
+
+
+def test_status_does_not_count_other_songs_file_as_downloaded(tmp_path):
+	library, album_file = _rock_library(tmp_path)
+	L.merge_playlist_scan(library, "spotify:p1", "Rock", _scan(False))
+	status = L.library_status(library, tmp_path, "m4a")
+	assert status["totals"]["downloaded"] == 1
+	assert status["totals"]["missing"] == 1
+
+
+def test_downloading_one_song_never_trashes_the_file_of_its_namesake(tmp_path):
+	library, album_file = _rock_library(tmp_path)
+	playlist = L.merge_playlist_scan(library, "spotify:p1", "Rock", _scan(False))
+	live = dict(playlist["tracks"][1], playlist="Rock", filename_prefix_number=2, filename_prefix_width=2)
+	(tmp_path / "Rock" / "02- Queen - Bohemian Rhapsody.m4a").write_bytes(b"ao vivo")
+	L.apply_library_download_result(library, "spotify:p1", live, downloaded=True, match={"videoId": "VID2"})
+	assert album_file.read_bytes() == b"versao do album"
+
+
+def test_unprefixed_fallback_is_refused_when_another_song_has_the_same_name(tmp_path):
+	folder = tmp_path / "Rock"
+	folder.mkdir()
+	(folder / "01- Queen - Bohemian Rhapsody.m4a").write_bytes(b"x")
+	first = {"title": "Bohemian Rhapsody", "artists": "Queen", "sp_id": "SP1", "playlist": "Rock"}
+	second = {"title": "Bohemian Rhapsody", "artists": "Queen", "sp_id": "SP2", "playlist": "Rock"}
+	alone = L.library_track_path(first, tmp_path, "m4a", playlist_tracks=[first])
+	assert alone.name == "01- Queen - Bohemian Rhapsody.m4a"
+	shared = L.library_track_path(second, tmp_path, "m4a", playlist_tracks=[first, second])
+	assert not shared.exists()
+
+
+def test_download_queue_does_not_skip_a_song_because_its_namesake_has_a_file(tmp_path):
+	from csvmusic.ui.library_mode import _pending_download_tracks
+
+	folder = tmp_path / "Rock"
+	folder.mkdir()
+	(folder / "01- Queen - Bohemian Rhapsody.m4a").write_bytes(b"x")
+	first = {"title": "Bohemian Rhapsody", "artists": "Queen", "sp_id": "SP1", "playlist": "Rock", "filename_prefix_number": 1}
+	second = {"title": "Bohemian Rhapsody", "artists": "Queen", "sp_id": "SP2", "playlist": "Rock"}
+	pending = _pending_download_tracks(
+		[first, second], tmp_path, "m4a", audio_signature="", audio_enabled=False, prefix_numbers=False, missing_only=True,
+	)
+	assert pending == [second]
