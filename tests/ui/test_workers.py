@@ -16,7 +16,7 @@ def test_pipeline_preserves_age_error_and_continues_next_track(monkeypatch, tmp_
 	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
 	monkeypatch.setattr(worker, "_ordered_force_candidates", lambda *args: [{"videoId": "restricted"}, {"videoId": "other"}])
 	message = age_restriction_message(using_cookies=False)
-	def fail(video_id, *args):
+	def fail(video_id, *args, **_kwargs):
 		calls.append(video_id)
 		raise AgeRestrictedError(message)
 	monkeypatch.setattr(worker, "_download_with_profile", fail)
@@ -74,7 +74,7 @@ def test_force_download_uses_best_low_confidence_candidate(monkeypatch, tmp_path
 	monkeypatch.setattr(workers, "tag_file", lambda *_args, **_kwargs: None)
 	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
 
-	def fake_download(_video_id, destination, base_name, _profile):
+	def fake_download(_video_id, destination, base_name, _profile, **_kwargs):
 		path = destination / f"{base_name}.mp3"
 		path.write_bytes(b"audio")
 		return path
@@ -159,7 +159,7 @@ def test_preferred_music_link_records_song_title_instead_of_url(monkeypatch, tmp
 	monkeypatch.setattr(workers, "tag_file", lambda *_args, **_kwargs: None)
 	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
 
-	def fake_download(_video_id, destination, base_name, _profile):
+	def fake_download(_video_id, destination, base_name, _profile, **_kwargs):
 		path = destination / f"{base_name}.mp3"
 		path.write_bytes(b"audio")
 		return path
@@ -194,7 +194,7 @@ def test_redownload_rewrites_m3u_from_complete_existing_manifest(monkeypatch, tm
 	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
 	monkeypatch.setattr(workers, "write_m3u", lambda _root, _name, tracks, _ext, **_kwargs: written.append(list(tracks)) or (playlist_dir / "Test Playlist.m3u8"))
 
-	def fake_download(_video_id, destination, base_name, _profile):
+	def fake_download(_video_id, destination, base_name, _profile, **_kwargs):
 		path = destination / f"{base_name}.mp3"
 		path.write_bytes(b"replacement")
 		return path
@@ -247,3 +247,52 @@ def test_skipped_tracks_do_not_wait_between_tracks(monkeypatch, tmp_path):
 	worker.run()
 
 	assert sleeps == []
+
+
+def _fake_download_tools(monkeypatch, *, payload=b"new audio"):
+	"""Real downloader functions with simulated yt-dlp and ffmpeg (no network)."""
+	import shutil
+	import subprocess
+	from csvmusic.core import downloader
+
+	def fake_ytdlp(args):
+		target = args[args.index("-o") + 1].replace("%(ext)s", "webm")
+		pathlib.Path(target).write_bytes(payload)
+		return 0, "", ""
+
+	def fake_capture(cmd, **_kwargs):
+		if "-i" in cmd and not cmd[-1].startswith("-"):
+			shutil.copyfile(cmd[cmd.index("-i") + 1], cmd[-1])
+		return subprocess.CompletedProcess(cmd, 0, "", "")
+
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fake_ytdlp)
+	monkeypatch.setattr(downloader, "_run_capture", fake_capture)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	monkeypatch.setattr(downloader, "store_source", lambda _path: None)
+
+
+def test_pipeline_tags_the_file_before_it_appears_in_the_playlist(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import INTERNAL_YTDLP, STAGING_DIR_NAME
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.yt_dlp_path = INTERNAL_YTDLP
+	worker.ffmpeg_path_override = "ffmpeg"
+	worker.tracks_override[0]["preferred_video_id"] = "selected-video"
+	final = tmp_path / "Test Playlist" / "Avril Lavigne - Complicated.mp3"
+	tagged = []
+	results = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	_fake_download_tools(monkeypatch)
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "_track_cover_bytes", lambda _track, _vid: b"cover")
+	monkeypatch.setattr(workers, "tag_file", lambda path, *_args, **_kwargs: tagged.append((path, final.exists())))
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	monkeypatch.setattr("csvmusic.core.audio_quality.audio_quality", lambda _path: {"low": False, "codec": "mp3", "kbps": 256})
+	worker.run()
+
+	assert results[0]["downloaded"] is True
+	assert results[0]["file_path"] == str(final)
+	assert results[0]["cover_bytes"] == b"cover"
+	assert len(tagged) == 1
+	assert tagged[0][0].parent.name == STAGING_DIR_NAME
+	assert tagged[0][1] is False
+	assert final.read_bytes() == b"new audio"

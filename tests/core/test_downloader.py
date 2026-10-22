@@ -324,3 +324,41 @@ def test_failed_download_leaves_no_partial_files(monkeypatch, tmp_path):
 
 	assert existing.read_bytes() == b"old audio"
 	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.m4a"]
+
+
+@pytest.mark.parametrize("download, fmt", [
+	(downloader.download_m4a, "m4a"),
+	(downloader.download_mp3, "mp3"),
+	(downloader.download_opus, "opus"),
+])
+def test_file_is_finished_before_it_reaches_the_playlist_folder(monkeypatch, tmp_path, download, fmt):
+	_fake_tools(monkeypatch)
+	final = tmp_path / f"Artist - Song.{fmt}"
+	seen = []
+
+	def before_install(staged):
+		seen.append((staged, final.exists()))
+
+	result = download("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg", before_install=before_install)
+
+	assert result == final and final.read_bytes() == b"new audio"
+	assert len(seen) == 1
+	staged, final_existed = seen[0]
+	assert staged.parent.name == downloader.STAGING_DIR_NAME
+	assert staged.suffix == f".{fmt}"
+	assert final_existed is False
+
+
+def test_failed_finishing_step_never_leaves_a_file_in_the_playlist_folder(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+	previous = tmp_path / "Artist - Song.m4a"
+	previous.write_bytes(b"old audio")
+
+	def broken_tags(_staged):
+		raise RuntimeError("tagging crashed")
+
+	with pytest.raises(RuntimeError, match="tagging crashed"):
+		downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg", before_install=broken_tags)
+
+	assert previous.read_bytes() == b"old audio"
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.m4a"]

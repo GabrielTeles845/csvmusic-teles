@@ -1,7 +1,7 @@
 # tabs only
 import os, pathlib, subprocess, requests, io, contextlib, json, base64, hashlib, shutil, time
 from dataclasses import dataclass
-from typing import Dict, Optional, List
+from typing import Callable, Dict, Optional, List
 import re, unicodedata
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3, APIC
@@ -456,7 +456,19 @@ def keep_previous_copy(path: pathlib.Path) -> pathlib.Path | None:
 	return target
 
 
-def _install_output(staged: pathlib.Path, final: pathlib.Path) -> pathlib.Path:
+BeforeInstall = Callable[[pathlib.Path], None]
+
+
+def _install_output(staged: pathlib.Path, final: pathlib.Path, before_install: BeforeInstall | None = None) -> pathlib.Path:
+	"""Finish the staged file (tags, checks) and only then move it into place.
+
+	``os.replace`` is atomic on the same volume: the playlist folder never holds
+	a half-written or untagged file, so "already downloaded" stays trustworthy.
+	If ``before_install`` raises, the staged file is discarded and any previous
+	file stays untouched.
+	"""
+	if before_install is not None:
+		before_install(staged)
 	if final.exists():
 		keep_previous_copy(final)
 	os.replace(staged, final)
@@ -750,7 +762,7 @@ _COMMON_YTDLP_ARGS = [
 ]
 
 
-def download_m4a(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None, audio_processing: Dict | None = None) -> pathlib.Path:
+def download_m4a(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None, audio_processing: Dict | None = None, before_install: BeforeInstall | None = None) -> pathlib.Path:
 	"""
 	YT Music only. Save using a sanitized stem so our search matches what yt-dlp writes.
 	- If output is already .m4a → done.
@@ -793,11 +805,11 @@ def download_m4a(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp
 		ffmpeg_bin = ffmpeg_bin or ffmpeg_path()
 		staged = _normalize_to_m4a(src, staged, ffmpeg_bin, video_id, audio_processing)
 		store_source(staged)
-		return _install_output(staged, dst_dir / (safe_base + ".m4a"))
+		return _install_output(staged, dst_dir / (safe_base + ".m4a"), before_install)
 	finally:
 		_finish_staging(staging, safe_base)
 
-def download_opus(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None) -> pathlib.Path:
+def download_opus(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None, before_install: BeforeInstall | None = None) -> pathlib.Path:
 	"""Download native Opus audio and remux it into an Ogg Opus container without re-encoding."""
 	dst_dir.mkdir(parents=True, exist_ok=True)
 	safe_base = _safe(base_name)
@@ -826,11 +838,11 @@ def download_opus(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dl
 			if proc.returncode != 0 or not staged.exists():
 				raise DownloadError(f"ffmpeg Opus remux failed: {detail}")
 		store_source(staged)
-		return _install_output(staged, dst_dir / f"{safe_base}.opus")
+		return _install_output(staged, dst_dir / f"{safe_base}.opus", before_install)
 	finally:
 		_finish_staging(staging, safe_base)
 
-def download_mp3(video_id: str, dst_dir: pathlib.Path, base_name: str, cbr_320: bool = False, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None, audio_processing: Dict | None = None, mp3_quality: int = 0, cbr_bitrate_kbps: int | None = None) -> pathlib.Path:
+def download_mp3(video_id: str, dst_dir: pathlib.Path, base_name: str, cbr_320: bool = False, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None, audio_processing: Dict | None = None, mp3_quality: int = 0, cbr_bitrate_kbps: int | None = None, before_install: BeforeInstall | None = None) -> pathlib.Path:
 	dst_dir.mkdir(parents=True, exist_ok=True)
 	safe_base = _safe(base_name)
 	staging = _staging_dir(dst_dir)
@@ -879,7 +891,7 @@ def download_mp3(video_id: str, dst_dir: pathlib.Path, base_name: str, cbr_320: 
 			log(f"download_mp3: ffmpeg transcode failed video_id={video_id} dst='{staged.name}' rc={rc}")
 			raise DownloadError(f"ffmpeg mp3 transcode failed: {detail}")
 		store_source(staged)
-		return _install_output(staged, dst_dir / (safe_base + ".mp3"))
+		return _install_output(staged, dst_dir / (safe_base + ".mp3"), before_install)
 	finally:
 		_finish_staging(staging, safe_base)
 
