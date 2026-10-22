@@ -1,5 +1,5 @@
 # tabs only
-import os, pathlib, subprocess, requests, io, contextlib, json, base64, hashlib
+import os, pathlib, subprocess, requests, io, contextlib, json, base64, hashlib, shutil, time
 from dataclasses import dataclass
 from typing import Dict, Optional, List
 import re, unicodedata
@@ -398,12 +398,69 @@ def _list_downloads(dir: pathlib.Path, base: str) -> list[pathlib.Path]:
 		key=lambda x: x.stat().st_mtime, reverse=True
 	)
 
+# Tudo o que o yt-dlp e o ffmpeg escrevem fica nesta pasta até o arquivo final
+# estar pronto. A limpeza só mexe aqui dentro: um "Artista - Música.mp3" antigo
+# ou um ".lrc" do usuário na pasta da playlist nunca é apagado ao trocar de formato.
+STAGING_DIR_NAME = ".csvmusic-partial"
+# Arquivo que vai ser substituído por um download novo vem para cá antes; o
+# usuário esvazia quando quiser.
+TRASH_DIR_NAME = ".csvmusic-lixeira"
+
+
+def _staging_dir(dst_dir: pathlib.Path) -> pathlib.Path:
+	staging = dst_dir / STAGING_DIR_NAME
+	staging.mkdir(parents=True, exist_ok=True)
+	return staging
+
+
 def _cleanup_outputs(dir: pathlib.Path, base: str) -> None:
+	"""Remove leftovers for ``base`` inside a staging folder (never a user folder)."""
+	if not dir.is_dir():
+		return
 	for p in _list_downloads(dir, base):
 		try:
 			p.unlink()
 		except Exception:
 			pass
+
+
+def _finish_staging(staging: pathlib.Path, base: str) -> None:
+	_cleanup_outputs(staging, base)
+	try:
+		staging.rmdir()
+	except OSError:
+		pass
+
+
+def keep_previous_copy(path: pathlib.Path) -> pathlib.Path | None:
+	"""Keep the file about to be replaced in the internal trash folder.
+
+	A hard link keeps the old copy without doubling disk use on the same
+	volume; a plain copy is the fallback.
+	"""
+	if not path.is_file():
+		return None
+	trash = path.parent / TRASH_DIR_NAME
+	trash.mkdir(parents=True, exist_ok=True)
+	stamp = time.strftime("%Y%m%d-%H%M%S")
+	target = trash / f"{path.stem}.{stamp}{path.suffix}"
+	counter = 2
+	while target.exists():
+		target = trash / f"{path.stem}.{stamp}-{counter}{path.suffix}"
+		counter += 1
+	try:
+		os.link(path, target)
+	except OSError:
+		shutil.copy2(path, target)
+	log(f"previous file kept in trash: '{path.name}' -> '{target}'")
+	return target
+
+
+def _install_output(staged: pathlib.Path, final: pathlib.Path) -> pathlib.Path:
+	if final.exists():
+		keep_previous_copy(final)
+	os.replace(staged, final)
+	return final
 
 
 def _replace_file(src: pathlib.Path, dst: pathlib.Path) -> None:
@@ -684,170 +741,147 @@ def _extractor_args(client: str | None) -> list[str]:
 	return ["--extractor-args", f"youtube:player_client={client}"]
 
 
+_COMMON_YTDLP_ARGS = [
+	"--no-playlist",
+	"--force-overwrites",
+	"--retries", "5",
+	"--fragment-retries", "5",
+	"--socket-timeout", "30",
+]
+
+
 def download_m4a(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None, audio_processing: Dict | None = None) -> pathlib.Path:
 	"""
 	YT Music only. Save using a sanitized stem so our search matches what yt-dlp writes.
 	- If output is already .m4a → done.
 	- Else try remux to .m4a (stream copy).
 	- Else transcode to AAC .m4a.
+	Everything is written in the staging folder first; only the finished file
+	reaches ``dst_dir``.
 	"""
 	dst_dir.mkdir(parents=True, exist_ok=True)
 	safe_base = _safe(base_name)
-
+	staging = _staging_dir(dst_dir)
 	# Force yt-dlp to use our sanitized basename
-	out_tpl = str(dst_dir / (safe_base + ".%(ext)s"))
-	_cleanup_outputs(dst_dir, safe_base)
-	# Resolve yt-dlp automatically if not provided
-	yt_bin = yt_dlp_bin or ytdlp_path()
-	cookies_args: list[str] = list(extra_yt_dlp_args or [])
-	js_runtime_args = ytdlp_js_runtime_args(yt_bin)
-	primary_base = [
-		yt_bin,
-		"-f", "ba[ext=m4a]/bestaudio[ext=m4a]/bestaudio",
-		"--no-playlist",
-		"--force-overwrites",
-		"--retries", "5",
-		"--fragment-retries", "5",
-		"--socket-timeout", "30",
-	]
-	fallback_base = [
-		yt_bin,
-		"-f", "bestaudio",
-		"--no-continue",
-		"--no-playlist",
-		"--force-overwrites",
-		"--retries", "5",
-		"--fragment-retries", "5",
-		"--socket-timeout", "30",
-	]
-	attempts: list[tuple[list[str], str]] = []
-	for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
+	out_tpl = str(staging / (safe_base + ".%(ext)s"))
+	_cleanup_outputs(staging, safe_base)
+	try:
+		# Resolve yt-dlp automatically if not provided
+		yt_bin = yt_dlp_bin or ytdlp_path()
+		cookies_args: list[str] = list(extra_yt_dlp_args or [])
+		js_runtime_args = ytdlp_js_runtime_args(yt_bin)
+		primary_base = [yt_bin, "-f", "ba[ext=m4a]/bestaudio[ext=m4a]/bestaudio"] + _COMMON_YTDLP_ARGS
+		fallback_base = [yt_bin, "-f", "bestaudio", "--no-continue"] + _COMMON_YTDLP_ARGS
+		attempts: list[tuple[list[str], str]] = []
+		for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
+			for client in _youtube_clients(cookies_args):
+				extractor_args = _extractor_args(client)
+				attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"primary client={client} url={base_url}"))
+				attempts.append((fallback_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"fallback client={client} url={base_url}"))
+		search_url = f"ytsearch1:{base_name}"
 		for client in _youtube_clients(cookies_args):
 			extractor_args = _extractor_args(client)
-			attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"primary client={client} url={base_url}"))
-			attempts.append((fallback_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"fallback client={client} url={base_url}"))
-	search_url = f"ytsearch1:{base_name}"
-	for client in _youtube_clients(cookies_args):
-		extractor_args = _extractor_args(client)
-		attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, search_url], f"search fallback query='{base_name}' client={client}"))
-	_run_ytdlp_attempts(attempts, label="download_m4a", video_id=video_id)
+			attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, search_url], f"search fallback query='{base_name}' client={client}"))
+		_run_ytdlp_attempts(attempts, label="download_m4a", video_id=video_id)
 
-	# What got written?
-	cands = _list_downloads(dst_dir, safe_base)
-	if not cands:
-		raise DownloadError("downloaded file not found")
-
-	src = cands[0]
-	dst = dst_dir / (safe_base + ".m4a")
-	ffmpeg_bin = ffmpeg_bin or ffmpeg_path()
-	result = _normalize_to_m4a(src, dst, ffmpeg_bin, video_id, audio_processing)
-	store_source(result)
-	return result
+		# What got written?
+		cands = _list_downloads(staging, safe_base)
+		if not cands:
+			raise DownloadError("downloaded file not found")
+		src = cands[0]
+		staged = staging / (safe_base + ".m4a")
+		ffmpeg_bin = ffmpeg_bin or ffmpeg_path()
+		staged = _normalize_to_m4a(src, staged, ffmpeg_bin, video_id, audio_processing)
+		store_source(staged)
+		return _install_output(staged, dst_dir / (safe_base + ".m4a"))
+	finally:
+		_finish_staging(staging, safe_base)
 
 def download_opus(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None) -> pathlib.Path:
 	"""Download native Opus audio and remux it into an Ogg Opus container without re-encoding."""
 	dst_dir.mkdir(parents=True, exist_ok=True)
 	safe_base = _safe(base_name)
-	out_tpl = str(dst_dir / (safe_base + ".%(ext)s"))
-	_cleanup_outputs(dst_dir, safe_base)
-	yt_bin = yt_dlp_bin or ytdlp_path()
-	cookies_args = list(extra_yt_dlp_args or [])
-	js_runtime_args = ytdlp_js_runtime_args(yt_bin)
-	cmd_base = [
-		yt_bin,
-		"-f", "ba[acodec^=opus]",
-		"--no-playlist",
-		"--force-overwrites",
-		"--retries", "5",
-		"--fragment-retries", "5",
-		"--socket-timeout", "30",
-	]
-	attempts: list[tuple[list[str], str]] = []
-	for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
-		for client in _youtube_clients(cookies_args):
-			attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"client={client} url={base_url}"))
-	_run_ytdlp_attempts(attempts, label="download_opus", video_id=video_id)
-	candidates = _list_downloads(dst_dir, safe_base)
-	if not candidates:
-		raise DownloadError("downloaded Opus file not found")
-	src = candidates[0]
-	dst = dst_dir / f"{safe_base}.opus"
-	if src == dst:
-		store_source(dst)
-		return dst
-	ffmpeg_bin = ffmpeg_bin or ffmpeg_path()
-	proc = _run_capture([ffmpeg_bin, "-y", "-i", str(src), "-map", "0:a:0", "-c:a", "copy", str(dst)])
-	detail = _summarize_tool_output(proc.stderr or "", proc.stdout or "")
-	if proc.returncode != 0 or not dst.exists():
-		raise DownloadError(f"ffmpeg Opus remux failed: {detail}")
+	staging = _staging_dir(dst_dir)
+	out_tpl = str(staging / (safe_base + ".%(ext)s"))
+	_cleanup_outputs(staging, safe_base)
 	try:
-		src.unlink()
-	except OSError:
-		pass
-	store_source(dst)
-	return dst
+		yt_bin = yt_dlp_bin or ytdlp_path()
+		cookies_args = list(extra_yt_dlp_args or [])
+		js_runtime_args = ytdlp_js_runtime_args(yt_bin)
+		cmd_base = [yt_bin, "-f", "ba[acodec^=opus]"] + _COMMON_YTDLP_ARGS
+		attempts: list[tuple[list[str], str]] = []
+		for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
+			for client in _youtube_clients(cookies_args):
+				attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"client={client} url={base_url}"))
+		_run_ytdlp_attempts(attempts, label="download_opus", video_id=video_id)
+		candidates = _list_downloads(staging, safe_base)
+		if not candidates:
+			raise DownloadError("downloaded Opus file not found")
+		src = candidates[0]
+		staged = staging / f"{safe_base}.opus"
+		if src != staged:
+			ffmpeg_bin = ffmpeg_bin or ffmpeg_path()
+			proc = _run_capture([ffmpeg_bin, "-y", "-i", str(src), "-map", "0:a:0", "-c:a", "copy", str(staged)])
+			detail = _summarize_tool_output(proc.stderr or "", proc.stdout or "")
+			if proc.returncode != 0 or not staged.exists():
+				raise DownloadError(f"ffmpeg Opus remux failed: {detail}")
+		store_source(staged)
+		return _install_output(staged, dst_dir / f"{safe_base}.opus")
+	finally:
+		_finish_staging(staging, safe_base)
 
 def download_mp3(video_id: str, dst_dir: pathlib.Path, base_name: str, cbr_320: bool = False, *, yt_dlp_bin: str | None = None, ffmpeg_bin: str | None = None, extra_yt_dlp_args: List[str] | None = None, audio_processing: Dict | None = None, mp3_quality: int = 0, cbr_bitrate_kbps: int | None = None) -> pathlib.Path:
 	dst_dir.mkdir(parents=True, exist_ok=True)
 	safe_base = _safe(base_name)
-	tmp = dst_dir / (safe_base + ".tmp")
-	if tmp.exists():
-		try: tmp.unlink()
-		except Exception: pass
-	_cleanup_outputs(dst_dir, safe_base)
-	yt_bin = yt_dlp_bin or ytdlp_path()
-	cookies_args: list[str] = list(extra_yt_dlp_args or [])
-	js_runtime_args = ytdlp_js_runtime_args(yt_bin)
-	cmd_base = [
-		yt_bin,
-		"-f", MP3_SOURCE_FORMAT,
-		"--no-playlist",
-		"--force-overwrites",
-		"--retries", "5",
-		"--fragment-retries", "5",
-		"--socket-timeout", "30",
-	]
-	attempts: list[tuple[list[str], str]] = []
-	for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
+	staging = _staging_dir(dst_dir)
+	tmp = staging / (safe_base + ".tmp")
+	_cleanup_outputs(staging, safe_base)
+	try:
+		yt_bin = yt_dlp_bin or ytdlp_path()
+		cookies_args: list[str] = list(extra_yt_dlp_args or [])
+		js_runtime_args = ytdlp_js_runtime_args(yt_bin)
+		cmd_base = [yt_bin, "-f", MP3_SOURCE_FORMAT] + _COMMON_YTDLP_ARGS
+		attempts: list[tuple[list[str], str]] = []
+		for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
+			for client in _youtube_clients(cookies_args):
+				attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), base_url], f"client={client} url={base_url}"))
+		search_url = f"ytsearch1:{base_name}"
 		for client in _youtube_clients(cookies_args):
-			attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), base_url], f"client={client} url={base_url}"))
-	search_url = f"ytsearch1:{base_name}"
-	for client in _youtube_clients(cookies_args):
-		attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), search_url], f"search fallback query='{base_name}' client={client}"))
-	_run_ytdlp_attempts(attempts, label="download_mp3", video_id=video_id)
+			attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), search_url], f"search fallback query='{base_name}' client={client}"))
+		_run_ytdlp_attempts(attempts, label="download_mp3", video_id=video_id)
 
-	# yt-dlp may append extension to .tmp; find it
-	src = None
-	if tmp.exists():
-		src = tmp
-	else:
-		cands = _list_downloads(dst_dir, safe_base + ".tmp")
-		if cands: src = cands[0]
-	if not src:
-		raise DownloadError("temp file not found")
+		# yt-dlp may append extension to .tmp; find it
+		src = None
+		if tmp.exists():
+			src = tmp
+		else:
+			cands = _list_downloads(staging, safe_base + ".tmp")
+			if cands: src = cands[0]
+		if not src:
+			raise DownloadError("temp file not found")
 
-	dst = dst_dir / (safe_base + ".mp3")
-	ffmpeg_bin = ffmpeg_bin or ffmpeg_path()
-	args = [ffmpeg_bin, "-y", "-i", str(src)]
-	_append_audio_filter(args, audio_processing, src=src, ffmpeg_bin=ffmpeg_bin)
-	mp3_quality = max(0, min(10, int(mp3_quality)))
-	if cbr_bitrate_kbps is not None:
-		args += ["-codec:a","libmp3lame","-b:a", f"{max(96, int(cbr_bitrate_kbps))}k"]
-	elif cbr_320:
-		args += ["-codec:a","libmp3lame","-b:a","320k"]
-	else:
-		args += ["-codec:a","libmp3lame","-q:a", str(mp3_quality)]
-	args += [str(dst)]
-	proc = _run_capture(args)
-	rc = proc.returncode
-	detail = _summarize_tool_output(proc.stderr or "", proc.stdout or "")
-	try: src.unlink()
-	except Exception: pass
-	if rc != 0 or not dst.exists():
-		log(f"download_mp3: ffmpeg transcode failed video_id={video_id} dst='{dst.name}' rc={rc}")
-		raise DownloadError(f"ffmpeg mp3 transcode failed: {detail}")
-	store_source(dst)
-	return dst
+		staged = staging / (safe_base + ".mp3")
+		ffmpeg_bin = ffmpeg_bin or ffmpeg_path()
+		args = [ffmpeg_bin, "-y", "-i", str(src)]
+		_append_audio_filter(args, audio_processing, src=src, ffmpeg_bin=ffmpeg_bin)
+		mp3_quality = max(0, min(10, int(mp3_quality)))
+		if cbr_bitrate_kbps is not None:
+			args += ["-codec:a","libmp3lame","-b:a", f"{max(96, int(cbr_bitrate_kbps))}k"]
+		elif cbr_320:
+			args += ["-codec:a","libmp3lame","-b:a","320k"]
+		else:
+			args += ["-codec:a","libmp3lame","-q:a", str(mp3_quality)]
+		args += [str(staged)]
+		proc = _run_capture(args)
+		rc = proc.returncode
+		detail = _summarize_tool_output(proc.stderr or "", proc.stdout or "")
+		if rc != 0 or not staged.exists():
+			log(f"download_mp3: ffmpeg transcode failed video_id={video_id} dst='{staged.name}' rc={rc}")
+			raise DownloadError(f"ffmpeg mp3 transcode failed: {detail}")
+		store_source(staged)
+		return _install_output(staged, dst_dir / (safe_base + ".mp3"))
+	finally:
+		_finish_staging(staging, safe_base)
 
 def write_m3u(out_dir: pathlib.Path, playlist_name: str, tracks_done: List[Dict], ext: str, *, suffix: str = ".m3u8", encoding: str = "utf-8", playlist_output_dir: pathlib.Path | None = None) -> pathlib.Path:
 	media_dir = out_dir / _safe(playlist_name)

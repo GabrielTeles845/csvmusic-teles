@@ -1,3 +1,4 @@
+import pathlib
 import pytest
 from csvmusic.core import downloader
 import unicodedata
@@ -242,3 +243,84 @@ def test_huge_batch_starts_paced_without_false_throttling_warning(count):
 	assert profile.active is True
 	assert "throttling" not in (profile.warning or "").lower()
 	assert "started throttling" not in (downloader.youtube_risk_acknowledgement(profile) or "").lower()
+
+
+def _fake_tools(monkeypatch, *, ext="webm", payload=b"new audio"):
+	"""Simulate yt-dlp (writes the -o target) and ffmpeg (copies input to output)."""
+	import shutil
+	import subprocess
+	calls = {"ytdlp": [], "ffmpeg": []}
+
+	def fake_ytdlp(args):
+		calls["ytdlp"].append(args)
+		target = args[args.index("-o") + 1].replace("%(ext)s", ext)
+		pathlib.Path(target).write_bytes(payload)
+		return 0, "", ""
+
+	def fake_capture(cmd, **_kwargs):
+		calls["ffmpeg"].append(cmd)
+		if "-i" in cmd and not cmd[-1].startswith("-"):
+			shutil.copyfile(cmd[cmd.index("-i") + 1], cmd[-1])
+		return subprocess.CompletedProcess(cmd, 0, "", "")
+
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fake_ytdlp)
+	monkeypatch.setattr(downloader, "_run_capture", fake_capture)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	monkeypatch.setattr(downloader, "store_source", lambda _path: None)
+	return calls
+
+
+@pytest.mark.parametrize("download, fmt", [
+	(downloader.download_m4a, "m4a"),
+	(downloader.download_mp3, "mp3"),
+	(downloader.download_opus, "opus"),
+])
+def test_switching_format_keeps_other_files_of_the_same_song(monkeypatch, tmp_path, download, fmt):
+	_fake_tools(monkeypatch)
+	others = {}
+	for ext in ("mp3", "m4a", "opus", "lrc", "webm"):
+		if ext == fmt:
+			continue
+		path = tmp_path / f"Artist - Song.{ext}"
+		path.write_bytes(f"old {ext}".encode())
+		others[path] = path.read_bytes()
+
+	result = download("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert result == tmp_path / f"Artist - Song.{fmt}"
+	assert result.read_bytes() == b"new audio"
+	for path, content in others.items():
+		assert path.read_bytes() == content
+	assert not (tmp_path / downloader.STAGING_DIR_NAME).exists()
+
+
+def test_redownload_keeps_replaced_file_in_trash(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+	current = tmp_path / "Artist - Song.mp3"
+	current.write_bytes(b"old audio")
+
+	downloader.download_mp3("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert current.read_bytes() == b"new audio"
+	kept = list((tmp_path / downloader.TRASH_DIR_NAME).iterdir())
+	assert len(kept) == 1 and kept[0].suffix == ".mp3"
+	assert kept[0].read_bytes() == b"old audio"
+
+
+def test_failed_download_leaves_no_partial_files(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+
+	def fail(args):
+		target = args[args.index("-o") + 1].replace("%(ext)s", "webm")
+		pathlib.Path(target + ".part").write_bytes(b"half")
+		return 1, "", "ERROR: Video unavailable"
+
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	existing = tmp_path / "Artist - Song.m4a"
+	existing.write_bytes(b"old audio")
+
+	with pytest.raises(downloader.DownloadError):
+		downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert existing.read_bytes() == b"old audio"
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.m4a"]
