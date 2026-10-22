@@ -37,6 +37,38 @@ const CENARIOS = {
 		if (stale.status !== 409 || stale.body?.code !== "track_moved") problemas.push(`PATCH com chave velha respondeu ${stale.status}`);
 		return problemas;
 	},
+	// Item 4: com filtro, a lista filtrada muda entre o pedido da página 0 e o da 1; nenhuma música pode sumir.
+	async lista(p) {
+		const pid = encodeURIComponent(OOTM);
+		await p.goto(`${BASE}/#/p/${pid}`);
+		await sleep(1200);
+		await p.locator(".chip[data-f=missing]").click();
+		await sleep(900);
+		const antes = await api(p, "GET", `/playlists/${pid}/tracks?filter=missing&offset=0&limit=500`);
+		// 50 das que faltam saem do filtro (como quando são baixadas), sem a tela reler a lista.
+		const sair = antes.body.items.slice(0, 50).map((t) => t.index);
+		await api(p, "POST", `/playlists/${pid}/tracks/set-enabled`, { enabled: false, indices: sair });
+		await p.locator("#main").evaluate((m) => { m.scrollTop = m.scrollHeight; });
+		await sleep(1200);
+		const depois = (await api(p, "GET", `/playlists/${pid}/tracks?filter=missing&offset=0&limit=500`)).body.items.map((t) => t.index);
+		const problemas = [];
+		for (const alvo of [100, 75, 30]) {
+			await p.locator("#main").evaluate((m, alvo) => {
+				const rh = parseFloat(getComputedStyle(m.querySelector(".vbody")).getPropertyValue("--rh")) || 52;
+				m.scrollTop = m.querySelector(".vbody").offsetTop + alvo * rh - 200;
+			}, alvo);
+			await sleep(900);
+			const linhas = await p.locator(".vbody .row[data-i]").evaluateAll((rows) => rows.map((r) => ({
+				pos: Math.round(parseFloat(r.style.top) / (parseFloat(getComputedStyle(r.parentElement).getPropertyValue("--rh")) || 52)),
+				i: Number(r.dataset.i),
+			})));
+			const erradas = linhas.filter((l) => depois[l.pos] !== l.i);
+			if (erradas.length) problemas.push(`perto da posição ${alvo}: ${erradas.length} linhas não batem com a lista filtrada atual`);
+		}
+		const total = await p.locator(".vbody").evaluate((c) => Math.round(c.offsetHeight / (parseFloat(getComputedStyle(c).getPropertyValue("--rh")) || 52)));
+		if (total !== depois.length) problemas.push(`a lista tem altura de ${total} linhas, o filtro tem ${depois.length}`);
+		return problemas;
+	},
 	// Item 2: salvar uma cópia por cima de um arquivo que existe pergunta antes.
 	async copia(p) {
 		await p.goto(`${BASE}/`);

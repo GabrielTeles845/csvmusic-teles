@@ -87,9 +87,16 @@ export class ListaVirtual {
 		try {
 			const r = await this.buscar(p * PAGINA, PAGINA);
 			if (g !== this.geracao) return;
+			const mudouTotal = this.total !== r.total;
+			if (mudouTotal && this.total !== null) {
+				// A lista filtrada mudou desde as outras páginas (ex.: músicas baixadas saíram de "Faltando"):
+				// elas estão deslocadas. Fica só esta; as outras visíveis são pedidas de novo, sem mexer na rolagem.
+				this.geracao++;
+				this.paginas.clear();
+				this.posicao.clear();
+			}
 			this.paginas.set(p, r.items || []);
 			(r.items || []).forEach((t, i) => this.posicao.set(t.index, p * PAGINA + i));
-			const mudouTotal = this.total !== r.total;
 			this.total = r.total;
 			this.aoReceber?.(r);
 			if (mudouTotal) this.redesenharTudo();
