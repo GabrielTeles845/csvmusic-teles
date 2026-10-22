@@ -232,3 +232,13 @@ def test_plain_failures_keep_details_from_every_attempt(monkeypatch, tmp_path):
 	assert not isinstance(error.value, downloader.YouTubeRiskError)
 	assert "first problem" in str(error.value)
 	assert "last problem" in str(error.value)
+
+
+@pytest.mark.parametrize("count", [500, 1124, 5000])
+def test_huge_batch_starts_paced_without_false_throttling_warning(count):
+	profile = downloader.youtube_batch_mitigation(count, using_cookies=False)
+
+	assert profile.label != downloader.YOUTUBE_MITIGATION_AGGRESSIVE.label
+	assert profile.active is True
+	assert "throttling" not in (profile.warning or "").lower()
+	assert "started throttling" not in (downloader.youtube_risk_acknowledgement(profile) or "").lower()

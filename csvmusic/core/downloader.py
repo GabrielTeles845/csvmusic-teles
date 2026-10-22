@@ -29,7 +29,6 @@ _YOUTUBE_RISK_PATTERNS: tuple[tuple[str, str], ...] = (
 	("unable to download video data: http error 403", "YouTube rejected the download request"),
 )
 _YOUTUBE_LARGE_BATCH_THRESHOLD = 250
-_YOUTUBE_EXTREME_BATCH_THRESHOLD = 500
 
 class DownloadError(Exception): pass
 
@@ -192,8 +191,12 @@ def _summarize_tool_output(stderr: str, stdout: str, *, using_cookies: bool = Fa
 
 
 def youtube_batch_mitigation(track_count: int, *, using_cookies: bool) -> YouTubeMitigationProfile:
-	if track_count >= _YOUTUBE_EXTREME_BATCH_THRESHOLD:
-		return YOUTUBE_MITIGATION_AGGRESSIVE
+	"""Initial pacing chosen from the batch size only.
+
+	The size never selects the aggressive profile: that one is reserved for a
+	real rate-limit signal, so it can still escalate and its "throttling"
+	warning is never shown before YouTube actually throttled anything.
+	"""
 	if track_count >= _YOUTUBE_LARGE_BATCH_THRESHOLD:
 		return YOUTUBE_MITIGATION_LARGE_BATCH
 	return YOUTUBE_MITIGATION_NONE
