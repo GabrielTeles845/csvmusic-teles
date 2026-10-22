@@ -23,6 +23,7 @@ from csvmusic.core.paths import ytdlp_path as _resolve_ytdlp, INTERNAL_YTDLP
 from csvmusic.core.subprocess_env import subprocess_kwargs
 from csvmusic.core.update_check import UpdateInfo, fetch_available_update
 from csvmusic.core.track_output import expected_track_path, track_filename_base
+from csvmusic.core.library import m3u_ready_tracks
 
 _FORCE_FALLBACK_MIN_SCORE = 0.45
 
@@ -609,11 +610,9 @@ class PipelineWorker(QThread):
 				ext = self.fmt if self.fmt in ("m4a", "mp3", "opus") else "mp3"
 				by_playlist: dict[str, list[dict]] = {}
 				manifest_tracks = self.m3u_tracks_override if self.m3u_tracks_override is not None else done_tracks
-				for completed_track in manifest_tracks:
+				for _track_playlist, completed_track in m3u_ready_tracks(manifest_tracks, self.out_dir, ext):
 					completed_playlist = self.playlist or completed_track.get("playlist") or playlist_name
-					expected_file = expected_track_path(completed_track, self.out_dir, ext)
-					if expected_file.exists():
-						by_playlist.setdefault(completed_playlist, []).append(completed_track)
+					by_playlist.setdefault(completed_playlist, []).append(completed_track)
 				for completed_playlist, playlist_tracks in by_playlist.items():
 					if self.write_m3u8:
 						m3u = write_m3u(self.out_dir, completed_playlist, playlist_tracks, ext, suffix=".m3u8", encoding="utf-8", playlist_output_dir=self.m3u_output_dir)

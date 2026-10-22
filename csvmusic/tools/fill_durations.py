@@ -12,6 +12,7 @@ import argparse
 import datetime
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -29,7 +30,10 @@ _APP_MARKERS = (
 	"csvmusic.library_mode_ui",
 	"csvmusic/library_mode_ui.py",
 	"csvmusic.exe",
+	"csvmusic/__main__.py",
 )
+# `python -m csvmusic` (csvmusic/__main__.py opens the app); not `-m csvmusic.<tool>`.
+_PACKAGE_ENTRY = re.compile(r"(?:^|\s)-m\s+csvmusic(?:\s|$)")
 
 
 @dataclass
@@ -99,7 +103,7 @@ def running_app_lines(process_lines: Iterable[str], own_pid: Optional[int] = Non
 		lowered = command.casefold() if pid_text.isdigit() else text.casefold()
 		if "fill_durations" in lowered:
 			continue
-		if any(marker in lowered for marker in _APP_MARKERS):
+		if any(marker in lowered for marker in _APP_MARKERS) or _PACKAGE_ENTRY.search(lowered):
 			found.append(text)
 	return found
 

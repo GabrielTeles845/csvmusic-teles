@@ -205,9 +205,42 @@ class _AbortableBuffer(io.StringIO):
 		return super().write(text)
 
 
+@contextlib.contextmanager
+def _abort_hooks_installed(deadline: float):
+	"""Give every YoutubeDL that yt-dlp's main() builds in this thread hooks that check Stop and the time limit.
+
+	`--print` makes yt-dlp quiet (no progress lines), so the output buffer alone is not written during a
+	download. The progress hook runs on each received block and the postprocessor hook at each step.
+	"""
+	import yt_dlp
+
+	original = yt_dlp.YoutubeDL
+	owner = threading.get_ident()
+
+	def check(_status: dict) -> None:
+		if threading.get_ident() != owner:
+			return
+		if _cancel_requested():
+			raise _InProcessAbort("cancelled")
+		if time.monotonic() > deadline:
+			raise _InProcessAbort("timeout")
+
+	class _AbortableYoutubeDL(original):  # type: ignore[misc, valid-type]
+		def __init__(self, *args, **kwargs):
+			super().__init__(*args, **kwargs)
+			self.add_progress_hook(check)
+			self.add_postprocessor_hook(check)
+
+	yt_dlp.YoutubeDL = _AbortableYoutubeDL
+	try:
+		yield
+	finally:
+		yt_dlp.YoutubeDL = original
+
+
 def _run_ytdlp_module(args: list[str]) -> tuple[int, str, str]:
-	# Rodando no mesmo processo não dá para matar o yt-dlp; ele para na próxima
-	# linha que escrever (o progresso escreve o tempo todo).
+	# Rodando no mesmo processo não dá para matar o yt-dlp; ele para no próximo
+	# bloco recebido (gancho de progresso) ou na próxima linha que escrever.
 	deadline = time.monotonic() + YTDLP_TIMEOUT_S
 	stdout_buf = _AbortableBuffer(deadline)
 	stderr_buf = _AbortableBuffer(deadline)
@@ -216,7 +249,7 @@ def _run_ytdlp_module(args: list[str]) -> tuple[int, str, str]:
 	except Exception as exc:
 		return 1, "", f"failed to import yt_dlp module: {exc}"
 	try:
-		with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+		with _abort_hooks_installed(deadline), contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
 			try:
 				rc = yt_dlp_main(args)
 			except SystemExit as exc:
@@ -1105,6 +1138,10 @@ def write_m3u(out_dir: pathlib.Path, playlist_name: str, tracks_done: List[Dict]
 				width = max(2, int(t.get("filename_prefix_width") or 2))
 				base = f"{int(t['filename_prefix_number']):0{width}d}- {base}"
 			media_path = media_dir / f"{_safe(base)}.{ext}"
+			stored = str(t.get("downloaded_path") or "").strip()
+			if stored and not media_path.exists() and pathlib.Path(stored).is_file():
+				# The song's file kept an older name (position changed, no prefix): list the real file.
+				media_path = pathlib.Path(stored)
 			try:
 				rel = pathlib.Path(os.path.relpath(media_path.resolve(), playlist_dir.resolve()))
 			except ValueError:

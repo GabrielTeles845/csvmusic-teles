@@ -125,6 +125,20 @@ def test_running_app_detection():
 	assert [line.split()[0] for line in found] == ["100", "102"]
 
 
+def test_running_app_detection_sees_the_package_entry_point():
+	lines = [
+		"200 /opt/homebrew/bin/python3.12 -m csvmusic",
+		"201 python -m csvmusic --debug",
+		"202 python /src/csvmusic/__main__.py",
+		"203 python -m csvmusic.fetch_csv x",
+		"204 python -m csvmusicx",
+	]
+
+	found = running_app_lines(lines)
+
+	assert [line.split()[0] for line in found] == ["200", "201", "202"]
+
+
 def test_backup_never_overwrites(tmp_path):
 	library_path = tmp_path / "library.json"
 	library_path.write_text("{}", encoding="utf-8")

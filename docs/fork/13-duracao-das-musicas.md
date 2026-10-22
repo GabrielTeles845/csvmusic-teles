@@ -97,7 +97,7 @@ O Spotify mostra `2:57` para qualquer coisa entre 2:57.000 e 2:57.999. Ao conver
 ### 4.1 Leitura da planilha (`core/csv_import.py`)
 
 - Aceitar os nomes: `Duration (ms)`, `Duration`, `Duração`, `Duracao`, `Duración`, `Tempo`, `Length`, `Time`.
-- Aceitar os formatos: `177000` (ms), `177` (s, se for < 3600 e a coluna não diz "ms"), `2:57`, `1:02:57`, `2.57`/`2,57` só se a coluna for de duração e não houver outra leitura possível.
+- Aceitar os formatos: `177000` (ms), `177` (s; numa coluna sem unidade no nome, a coluna inteira decide: mediana dos números acima de 10 000 é ms, senão s, para uma música de 1 h+ em segundos não virar 3,6 s), `2:57`, `1:02:57`, `2.57`/`2,57` só se a coluna for de duração e não houver outra leitura possível.
 - Junto com o CSV robusto do roadmap (separador `;`, BOM, acentos, colunas em pt/es: item 1.23).
 - Tirar o ID do Spotify do `Link` (`open.spotify.com/track/<id>`) para `sp_id`.
 

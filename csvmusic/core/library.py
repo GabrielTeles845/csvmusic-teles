@@ -212,7 +212,7 @@ def rename_library_playlist(
 		old_folder = root / old_safe
 		new_folder = root / new_safe
 		if old_folder.exists() and old_folder.is_dir():
-			if old_folder != new_folder and new_folder.exists():
+			if old_folder != new_folder and new_folder.exists() and not _same_entry(old_folder, new_folder):
 				raise FileExistsError(f"The destination folder already exists: {new_folder}")
 			m3u_moves: list[tuple[pathlib.Path, pathlib.Path]] = []
 			m3u_unchanged: list[pathlib.Path] = []
@@ -220,20 +220,20 @@ def rename_library_playlist(
 				source = old_folder / f"{old_safe}{suffix}"
 				destination = old_folder / f"{new_safe}{suffix}"
 				if source.exists() and source != destination:
-					if destination.exists():
+					if destination.exists() and not _same_entry(source, destination):
 						raise FileExistsError(f"The destination playlist file already exists: {destination}")
 					m3u_moves.append((source, destination))
 				elif source.exists():
 					m3u_unchanged.append(source)
 			if old_folder != new_folder:
-				old_folder.rename(new_folder)
+				_rename_entry(old_folder, new_folder)
 				renamed_folder = new_folder
 			else:
 				renamed_folder = old_folder
 			for old_file, old_destination in m3u_moves:
 				source = renamed_folder / old_file.name
 				destination = renamed_folder / old_destination.name
-				source.rename(destination)
+				_rename_entry(source, destination)
 				_update_m3u_playlist_name(destination, clean_name)
 			for old_file in m3u_unchanged:
 				_update_m3u_playlist_name(renamed_folder / old_file.name, clean_name)
@@ -243,6 +243,24 @@ def rename_library_playlist(
 	for track in playlist.get("tracks", []):
 		track["playlist"] = clean_name
 	return playlist, renamed_folder
+
+
+def _same_entry(first: pathlib.Path, second: pathlib.Path) -> bool:
+	"""True when two names reach the same file or folder (APFS ignores letter case: "rock" is "Rock")."""
+	try:
+		return os.path.samefile(first, second)
+	except OSError:
+		return False
+
+
+def _rename_entry(source: pathlib.Path, destination: pathlib.Path) -> None:
+	"""Rename, also when only the letter case changes on a case-insensitive disk (via a temporary name)."""
+	if source != destination and _same_entry(source, destination):
+		temporary = source.with_name(f".{source.name}.renaming-{os.getpid()}")
+		source.rename(temporary)
+		temporary.rename(destination)
+		return
+	source.rename(destination)
 
 
 def edit_library_track(library: dict, playlist_id: str, track_index: int, title: str, album: str) -> dict:
@@ -293,27 +311,40 @@ def merge_playlist_scan(
 		old_track["playlist_occurrence"] = occurrence
 		previous[_track_key(old_track)] = old_track
 	effective_name = str(playlist.get("name") or name or "Spotify Playlist").strip() if playlist.get("custom_name") else str(name or playlist.get("name") or "Spotify Playlist").strip()
+	if not playlist.get("custom_name"):
+		effective_name = _unique_playlist_name(library, playlist, effective_name)
 	merged: list[dict] = []
 	seen: set[str] = set()
 	used_old: set[int] = set()
 	old_by_text: dict[str, list[dict]] = {}
 	for candidate in playlist.get("tracks", []):
 		old_by_text.setdefault(_track_text_key(candidate), []).append(candidate)
+	old_folder_name = str(playlist.get("name") or effective_name or "Playlist")
+	old_siblings = playlist_probes(dict(playlist, name=old_folder_name))
 	new_occurrences: dict[str, int] = {}
+	normalized: list[dict] = []
 	for position, raw in enumerate(tracks, start=1):
 		track = _normalized_track(raw, effective_name, position)
 		base_key = _track_base_key(track)
 		occurrence = int(raw.get("playlist_occurrence") or (new_occurrences.get(base_key, 0) + 1))
 		new_occurrences[base_key] = max(new_occurrences.get(base_key, 0), occurrence)
 		track["playlist_occurrence"] = occurrence
+		normalized.append(track)
+	# An old song that the scan still has under its own key is never handed to a namesake by text:
+	# the namesake would inherit its file, chosen video and lock.
+	claimed_by_key = {id(previous[_track_key(track)]) for track in normalized if _track_key(track) in previous}
+	for track in normalized:
 		key = _track_key(track)
 		if key in seen:
 			continue
 		seen.add(key)
 		old = previous.get(key, {})
 		if not old:
-			matching_old = old_by_text.get(_track_text_key(track), [])
-			if len(matching_old) == 1:
+			matching_old = [
+				candidate for candidate in old_by_text.get(_track_text_key(track), [])
+				if id(candidate) not in used_old and id(candidate) not in claimed_by_key
+			]
+			if len(matching_old) == 1 and len(old_by_text.get(_track_text_key(track), [])) == 1:
 				old = matching_old[0]
 		if old:
 			used_old.add(id(old))
@@ -347,8 +378,10 @@ def merge_playlist_scan(
 		old_downloaded_path = old.get("downloaded_path")
 		if not old_downloaded_path and old:
 			old_probe = dict(old)
-			old_probe["playlist"] = str(playlist.get("name") or effective_name or "Playlist")
-			candidate = library_track_path(old_probe, pathlib.Path(library.get("output_dir") or ""), library_format(library))
+			old_probe["playlist"] = old_folder_name
+			candidate = library_track_path(
+				old_probe, pathlib.Path(library.get("output_dir") or ""), library_format(library), playlist_tracks=old_siblings,
+			)
 			if candidate.is_file():
 				old_downloaded_path = str(candidate)
 		track["downloaded_path"] = old_downloaded_path or None
@@ -387,6 +420,34 @@ def merge_playlist_scan(
 		},
 	})
 	return playlist
+
+
+def _folder_key(name: str) -> str:
+	return unicodedata.normalize("NFC", sanitize_name(name) or "Playlist").casefold()
+
+
+def _unique_playlist_name(library: dict, playlist: dict, desired: str) -> str:
+	"""Name for `playlist` whose output folder (and M3U) no other playlist of the library uses.
+
+	A collision gets " (2)", " (3)"...; a playlist already holding one of those numbered names for the same
+	source name keeps it, so its folder does not move when the other playlist leaves or is renamed.
+	"""
+	taken = {
+		_folder_key(str(other.get("name") or "Playlist"))
+		for other in library.get("playlists", [])
+		if other is not playlist
+	}
+	current = str(playlist.get("name") or "").strip()
+	match = re.fullmatch(r"(.*) \((\d+)\)", current)
+	if match and _folder_key(match.group(1)) == _folder_key(desired) and int(match.group(2)) >= 2:
+		if _folder_key(current) not in taken:
+			return current
+	if _folder_key(desired) not in taken:
+		return desired
+	counter = 2
+	while _folder_key(f"{desired} ({counter})") in taken:
+		counter += 1
+	return f"{desired} ({counter})"
 
 
 def mark_playlist_access_error(library: dict, playlist_id: str, kind: str, message: str) -> dict | None:
@@ -545,7 +606,14 @@ def apply_library_download_result(
 				output_root = pathlib.Path(library.get("output_dir") or "").resolve()
 				try:
 					old_resolved = old_path.resolve()
-					if old_resolved != downloaded_file.resolve() and old_resolved.is_relative_to(output_root) and old_resolved.is_file():
+					owned_by_other = any(
+						other is not stored and _same_file(other.get("downloaded_path"), old_resolved)
+						for other in playlist.get("tracks", [])
+					)
+					if (
+						old_resolved != downloaded_file.resolve() and old_resolved.is_relative_to(output_root)
+						and old_resolved.is_file() and not owned_by_other
+					):
 						# Renamed song: the old file goes to the internal trash, never straight to deletion.
 						keep_previous_copy(old_resolved)
 						old_resolved.unlink()
@@ -561,6 +629,16 @@ def apply_library_download_result(
 		stored["skip_reason"] = str(skip_reason or "No confident match on YouTube Music").strip()[:500]
 		stored["skipped_at"] = _now()
 	return stored
+
+
+def _same_file(value: Any, target: pathlib.Path) -> bool:
+	text = str(value or "").strip()
+	if not text:
+		return False
+	try:
+		return pathlib.Path(text).resolve() == target
+	except (OSError, RuntimeError):
+		return False
 
 
 def _length_review_reason(stored: dict, downloaded_duration_ms: int | None) -> str:
@@ -629,10 +707,12 @@ def track_status_counts(
 	output_dir: str | pathlib.Path,
 	fmt: str,
 	listing_cache: dict | None = None,
+	playlist_tracks: list[dict] | None = None,
 ) -> dict[str, int]:
 	"""Count one stored track the way library_status does (enabled/downloaded/missing/redownload).
 
 	A disabled song only counts as "disabled": it is never downloaded, so it is not "missing".
+	`playlist_tracks` goes to library_track_path (songs of the playlist, with "playlist" set to its name).
 	"""
 	status = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
 	if not track.get("enabled", True):
@@ -643,7 +723,7 @@ def track_status_counts(
 	probe["playlist"] = playlist_name
 	if track.get("force_redownload"):
 		status["redownload"] += 1
-	if library_track_path(probe, pathlib.Path(output_dir), fmt, listing_cache=listing_cache).exists():
+	if library_track_path(probe, pathlib.Path(output_dir), fmt, listing_cache=listing_cache, playlist_tracks=playlist_tracks).exists():
 		status["downloaded"] += 1
 	else:
 		status["missing"] += 1
@@ -682,8 +762,9 @@ def library_status(
 		status = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
 		name = playlist.get("name") or "Playlist"
 		per_track = track_counts.setdefault(key, {})
+		siblings = playlist_probes(playlist)
 		for track_index, stored in enumerate(playlist.get("tracks", [])):
-			counts = track_status_counts(stored, name, root, fmt, listing_cache)
+			counts = track_status_counts(stored, name, root, fmt, listing_cache, playlist_tracks=siblings)
 			per_track[track_index] = counts
 			for field, value in counts.items():
 				status[field] += value
@@ -707,12 +788,10 @@ def write_library_m3us(
 	"""Write each playlist's M3U with the songs whose file already exists (used during a download, not only at the end)."""
 	root = pathlib.Path(output_dir)
 	by_playlist: dict[str, list[dict]] = {}
-	for track in manifest_tracks:
-		name = str(track.get("playlist") or "Playlist")
+	for name, entry in m3u_ready_tracks(manifest_tracks, root, fmt):
 		if playlist_names is not None and name not in playlist_names:
 			continue
-		if expected_track_path(track, root, fmt).exists():
-			by_playlist.setdefault(name, []).append(track)
+		by_playlist.setdefault(name, []).append(entry)
 	written: list[pathlib.Path] = []
 	output_for_lists = pathlib.Path(m3u_output_dir) if m3u_output_dir else None
 	for name, tracks in by_playlist.items():
@@ -721,6 +800,30 @@ def write_library_m3us(
 		if write_m3u_plain:
 			written.append(write_m3u(root, name, tracks, fmt, suffix=".m3u", encoding="utf-8-sig", playlist_output_dir=output_for_lists))
 	return written
+
+
+def m3u_ready_tracks(
+	manifest_tracks: list[dict],
+	output_dir: str | pathlib.Path,
+	fmt: str,
+) -> list[tuple[str, dict]]:
+	"""(playlist name, row) for every song whose file exists, with `downloaded_path` set to that file.
+
+	The expected name wins (a fresh download); otherwise the file the library recognizes
+	(library_track_path: the recorded path, or the same name without an outdated position prefix).
+	write_m3u lists `downloaded_path` when the expected file is missing.
+	"""
+	root = pathlib.Path(output_dir)
+	listing_cache: dict = {}
+	ready: list[tuple[str, dict]] = []
+	for track in manifest_tracks:
+		name = str(track.get("playlist") or "Playlist")
+		found = expected_track_path(track, root, fmt)
+		if not found.is_file():
+			found = library_track_path(track, root, fmt, listing_cache=listing_cache, playlist_tracks=manifest_tracks)
+		if found.is_file():
+			ready.append((name, dict(track, downloaded_path=str(found))))
+	return ready
 
 
 def export_csv(path: str | pathlib.Path, library: dict, playlist_ids: set[str] | None = None) -> None:
@@ -794,10 +897,14 @@ def library_track_path(
 	fmt: str,
 	*,
 	listing_cache: dict | None = None,
+	playlist_tracks: list[dict] | None = None,
 ) -> pathlib.Path:
 	"""Resolve the file actually downloaded for a library row before its current expected filename.
 
 	Pass the same `listing_cache` dict to many calls in one pass so each playlist folder is listed once.
+	Pass `playlist_tracks` (the songs of the same playlist, or rows of several playlists) so a file without
+	the expected position prefix is only recovered when no other song there has the same artist and title:
+	otherwise one song would take the file of its namesake.
 	"""
 	stored = str(track.get("downloaded_path") or "").strip()
 	if stored:
@@ -817,7 +924,44 @@ def library_track_path(
 		if listing_cache is not None:
 			listing_cache[expected.parent] = listing
 	matches = listing.get(plain.name, [])
-	return matches[0] if len(matches) == 1 else expected
+	if len(matches) != 1:
+		return expected
+	if playlist_tracks is not None and _plain_name_key(track) in _shared_plain_names(playlist_tracks, listing_cache):
+		return expected
+	return matches[0]
+
+
+def playlist_probes(playlist: dict) -> list[dict]:
+	"""Copies of a playlist's songs carrying its current name, for `playlist_tracks=` in library_track_path."""
+	name = str(playlist.get("name") or "Playlist")
+	return [dict(track, playlist=name) for track in playlist.get("tracks", [])]
+
+
+def _plain_name_key(track: dict) -> tuple[str, str]:
+	"""Playlist folder and file name without position prefix (format left out), compared without case."""
+	folder = sanitize_name(str(track.get("playlist") or "Playlist"))
+	base = sanitize_name(f"{track.get('artists', '')} - {track.get('title', '')}")
+	return (
+		unicodedata.normalize("NFC", folder).casefold(),
+		unicodedata.normalize("NFC", base).casefold(),
+	)
+
+
+def _shared_plain_names(tracks: list[dict], listing_cache: dict | None = None) -> set[tuple[str, str]]:
+	"""Names (per playlist folder) that more than one song resolves to without its position prefix."""
+	cache_key = ("shared-plain-names", id(tracks))
+	if listing_cache is not None:
+		cached = listing_cache.get(cache_key)
+		if cached is not None and cached[0] is tracks:
+			return cached[1]
+	counts: dict[tuple[str, str], int] = {}
+	for other in tracks:
+		key = _plain_name_key(other)
+		counts[key] = counts.get(key, 0) + 1
+	shared = {key for key, count in counts.items() if count > 1}
+	if listing_cache is not None:
+		listing_cache[cache_key] = (tracks, shared)
+	return shared
 
 
 def _unprefixed_listing(folder: pathlib.Path) -> dict[str, list[pathlib.Path]]:

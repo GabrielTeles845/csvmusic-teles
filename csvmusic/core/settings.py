@@ -27,6 +27,10 @@ FORK_FOLDER_NAME = "CSVMusicTeles"
 DATA_DIR_ENV = "CSVMUSIC_DATA_DIR"
 # What the first run copies from the original app (never moved, never changed there).
 SEED_FILES = ("settings.json", "library.json", "youtube-cookies.txt")
+# The YouTube sign-in (Firefox profile, youtube-cookies.txt, popup-cookies.txt) lives in this subfolder.
+SEED_FOLDERS = ("youtube-login",)
+# Firefox lock files: a copy of them would make the fork's Firefox think the profile is in use.
+_SEED_IGNORED = ("lock", ".parentlock", "parent.lock")
 
 
 def _folder_candidates() -> tuple[pathlib.Path, list[pathlib.Path]]:
@@ -52,15 +56,41 @@ def _seed_from_original(target: pathlib.Path, sources: list[pathlib.Path]) -> No
 	"""First run only: COPY the original app's settings and library so no playlist is lost."""
 	for source in sources:
 		files = [source / name for name in SEED_FILES if (source / name).is_file()]
-		if not files:
+		folders = [source / name for name in SEED_FOLDERS if (source / name).is_dir()]
+		if not files and not folders:
 			continue
 		target.mkdir(parents=True, exist_ok=True)
 		for path in files:
 			destination = target / path.name
 			if not destination.exists():
 				shutil.copy2(path, destination)
-		_log(f"settings first run: copied {[path.name for path in files]} from {source} to {target}")
+		for folder in folders:
+			destination = target / folder.name
+			if not destination.exists():
+				shutil.copytree(folder, destination, ignore=shutil.ignore_patterns(*_SEED_IGNORED), symlinks=True)
+		_repoint_copied_settings(target / _SETTINGS_FILE, source, target)
+		_log(f"settings first run: copied {[path.name for path in files + folders]} from {source} to {target}")
 		return
+
+
+def _repoint_copied_settings(path: pathlib.Path, source: pathlib.Path, target: pathlib.Path) -> None:
+	"""Point a copied cookies_file that lives in the original's folder at the fork's copy.
+
+	yt-dlp rewrites the cookie file it is given; left as is, the fork would keep changing the original's file.
+	"""
+	data = _read_json(path) if path.is_file() else None
+	value = str((data or {}).get("cookies_file") or "").strip()
+	if not value:
+		return
+	try:
+		relative = pathlib.Path(value).expanduser().resolve().relative_to(source.resolve())
+	except (OSError, RuntimeError, ValueError):
+		return
+	data["cookies_file"] = str(target / relative)
+	temporary = path.with_name(path.name + ".tmp")
+	temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+	temporary.replace(path)
+	_log(f"settings first run: cookies_file now points at {data['cookies_file']}")
 
 
 def _settings_dir() -> pathlib.Path:

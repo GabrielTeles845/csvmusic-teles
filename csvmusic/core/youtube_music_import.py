@@ -37,6 +37,9 @@ def fetch_youtube_music_source(value: str, *, limit: int | None = None) -> YouTu
 	raw_tracks = playlist.get("tracks") if isinstance(playlist.get("tracks"), list) else []
 	total_count = _safe_int(playlist.get("trackCount")) or len(raw_tracks)
 	tracks = _tracks_from_playlist(raw_tracks, name)
+	if total_count and len(tracks) > total_count:
+		# More rows than the playlist has: pages overlapped, so a repeated video is not a real repeat here.
+		tracks = _tracks_from_playlist(raw_tracks, name, unique_videos=True)
 	if not tracks:
 		raise YouTubeMusicImportError(f"YouTube Music loaded the {source_type}, but no playable tracks were found.")
 	warning = None
@@ -81,14 +84,18 @@ def parse_youtube_playlist_id(value: str) -> str:
 	return playlist_id
 
 
-def _tracks_from_playlist(items: list[Any], playlist_name: str) -> list[dict]:
+def _tracks_from_playlist(items: list[Any], playlist_name: str, *, unique_videos: bool = False) -> list[dict]:
 	out: list[dict] = []
 	seen: set[str] = set()
 	for item in items:
 		if not isinstance(item, dict):
 			continue
 		video_id = _clean_text(item.get("videoId"))
-		if video_id and video_id in seen:
+		# setVideoId names one entry of the playlist: the same video added twice has two of them, while an
+		# entry repeated by a continuation page keeps its own. Anonymous reads usually lack it: then a
+		# repeated video is kept, unless the caller asks for one row per video.
+		entry_id = _clean_text(item.get("setVideoId")) or (video_id if unique_videos else "")
+		if entry_id and entry_id in seen:
 			continue
 		title = _clean_text(item.get("title"))
 		artists = _artists_text(item)
@@ -96,8 +103,8 @@ def _tracks_from_playlist(items: list[Any], playlist_name: str) -> list[dict]:
 			artists, title = _split_video_title(title, _clean_text(item.get("author") or item.get("channel")))
 		if not title or not artists:
 			continue
-		if video_id:
-			seen.add(video_id)
+		if entry_id:
+			seen.add(entry_id)
 		out.append({
 			"title": title,
 			"artists": artists,
