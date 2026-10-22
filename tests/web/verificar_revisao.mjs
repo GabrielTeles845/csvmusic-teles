@@ -86,6 +86,20 @@ const CENARIOS = {
 		if (await p.locator('[data-a="ejetar"]').isDisabled()) problemas.push("ejetar continuou desligado depois da resposta");
 		return problemas;
 	},
+	// Item 9: linha do registro que chega pelo evento enquanto GET /api/log responde não some.
+	// Precisa do servidor falso com --log-durante-carga.
+	async registro(p) {
+		await p.goto(`${BASE}/`);
+		await sleep(1000);
+		await p.locator('.side [data-l="registro"]').click();
+		await sleep(1800);
+		const linhas = await p.locator("[data-log] > div:not([aria-hidden])").allInnerTexts();
+		const problemas = [];
+		if (!linhas.some((l) => l.includes("Linha que chegou durante a carga"))) problemas.push("a linha que chegou durante a carga sumiu");
+		const seqs = linhas.filter((l) => l.includes("Linha de exemplo")).length;
+		if (seqs !== 30) problemas.push(`esperava 30 linhas de exemplo, vieram ${seqs}`);
+		return problemas;
+	},
 	// Item 2: salvar uma cópia por cima de um arquivo que existe pergunta antes.
 	async copia(p) {
 		await p.goto(`${BASE}/`);

@@ -9,7 +9,8 @@ inventados aqui mesmo (nomes, capas, números). Nada aqui é dado real. Só bibl
 
 Opções: --porta N (0 = livre), --atraso MS (espera em toda chamada JSON, para ver o brilho),
 --job download|scan|nenhum (o que já está rodando ao abrir), --vazio (biblioteca sem playlist),
---primeira-vez (mostra o aviso inicial), --token T (padrão "mock-token").
+--primeira-vez (mostra o aviso inicial), --token T (padrão "mock-token"), --log-durante-carga (linha do
+registro chega por evento enquanto GET /api/log responde).
 """
 from __future__ import annotations
 
@@ -571,6 +572,11 @@ class Handler(BaseHTTPRequestHandler):
 		b = BIB
 		with LOCK:
 			r = self.api_dentro(metodo, caminho, q, b)
+			if caminho == "/log" and ARGS.log_durante_carga:
+				# Uma linha nova sai pelo evento depois da foto do registro e antes da resposta chegar.
+				b.registrar(f"Linha que chegou durante a carga do registro ({b.seq + 1}).")
+		if caminho == "/log" and ARGS.log_durante_carga:
+			time.sleep(.8)
 		if isinstance(r, tuple):
 			self.bytes_(*r)
 		else:
@@ -968,6 +974,7 @@ def main() -> None:
 	p.add_argument("--primeira-vez", action="store_true")
 	p.add_argument("--token", default="mock-token")
 	p.add_argument("--erro-biblioteca", action="store_true", help="state.library.load_error preenchido")
+	p.add_argument("--log-durante-carga", action="store_true", help="GET /api/log demora e uma linha nova chega pelo evento no meio")
 	ARGS = p.parse_args()
 	BIB = Biblioteca(ARGS.vazio, ARGS.primeira_vez)
 	for k in range(30):
