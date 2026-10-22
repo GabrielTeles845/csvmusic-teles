@@ -1,6 +1,6 @@
 # tabs only
 from PySide6.QtCore import QObject, Signal, QThread
-import pathlib, traceback, time, random
+import pathlib, traceback, time, random, threading
 import subprocess
 import json
 import sqlite3
@@ -16,7 +16,8 @@ from csvmusic.core.ytmusic_match import find_best, more_candidates, RATE_LIMIT_S
 from csvmusic.core.downloader import (
 	download_m4a, download_mp3, download_opus, tag_file, yt_thumbnail_bytes, cover_art_url_bytes, write_m3u, sanitize_name,
 	youtube_batch_mitigation, build_ytdlp_mitigation_args, detect_youtube_risk,
-	YOUTUBE_MITIGATION_NONE, YOUTUBE_MITIGATION_AGGRESSIVE, YouTubeMitigationProfile, AgeRestrictedError, YouTubeRiskError
+	YOUTUBE_MITIGATION_NONE, YOUTUBE_MITIGATION_AGGRESSIVE, YouTubeMitigationProfile, AgeRestrictedError, YouTubeRiskError,
+	DownloadCancelled, cancellation_scope,
 )
 from csvmusic.core.paths import ytdlp_path as _resolve_ytdlp, INTERNAL_YTDLP
 from csvmusic.core.subprocess_env import subprocess_kwargs
@@ -215,10 +216,13 @@ class PipelineWorker(QThread):
 		self.m3u_output_dir = pathlib.Path(m3u_output_dir) if m3u_output_dir else None
 		self.row_indices = row_indices or []
 		self._stop = False
+		self._cancel = threading.Event()
 		self._mitigation = YOUTUBE_MITIGATION_NONE
 
 	def stop(self):
+		# Também encerra o yt-dlp/ffmpeg em andamento, não só entre faixas.
 		self._stop = True
+		self._cancel.set()
 
 	def _download_with_profile(self, vid: str, dest_dir: pathlib.Path, base: str, profile: YouTubeMitigationProfile, *, before_install: Callable[[pathlib.Path], None] | None = None):
 		extra_args: list[str] = []
@@ -337,7 +341,7 @@ class PipelineWorker(QThread):
 			try:
 				fp = self._download_with_profile(vid, dest_dir, base, self._mitigation, before_install=self._tag_before_install(track, row_idx, vid, cover_holder))
 				return fp, cover_holder.get("cover"), candidate
-			except (AgeRestrictedError, YouTubeRiskError):
+			except (AgeRestrictedError, YouTubeRiskError, DownloadCancelled):
 				raise
 			except Exception as candidate_exc:
 				last_err = str(candidate_exc)
@@ -356,6 +360,10 @@ class PipelineWorker(QThread):
 		return base
 
 	def run(self):
+		with cancellation_scope(self._cancel):
+			self._run_pipeline()
+
+	def _run_pipeline(self):
 		try:
 			self.sig_log.emit("[csv] loading…")
 			if self.tracks_override is not None:
@@ -502,6 +510,7 @@ class PipelineWorker(QThread):
 				else:
 					self.sig_row_status.emit(row_idx, f"Downloading ({self.fmt})…")
 				error_msg = None
+				cancelled = False
 				candidate_sequence = self._ordered_force_candidates(t, match, options)
 				fallback_attempts_enabled = self.force_download and len(candidate_sequence) > 1
 
@@ -514,6 +523,8 @@ class PipelineWorker(QThread):
 					else:
 						self.sig_row_status.emit(row_idx, f"Done → {fp.name}")
 					done_tracks.append(t)
+				except DownloadCancelled:
+					cancelled = True
 				except Exception as e:
 					err = str(e)
 					risk_reason = e.reason if isinstance(e, YouTubeRiskError) else detect_youtube_risk(err)
@@ -530,6 +541,9 @@ class PipelineWorker(QThread):
 								self.sig_row_status.emit(row_idx, f"Done → {fp.name}")
 							done_tracks.append(t)
 							retried = True
+						except DownloadCancelled:
+							cancelled = True
+							retried = True
 						except Exception as retry_exc:
 							err = str(retry_exc)
 					if not retried:
@@ -538,8 +552,14 @@ class PipelineWorker(QThread):
 						failed_tracks.append({"track": t, "error": err})
 						error_msg = err
 				finally:
-					processed += 1
-					self.sig_progress.emit(processed, total)
+					if not cancelled:
+						processed += 1
+						self.sig_progress.emit(processed, total)
+				if cancelled:
+					# Stop no meio do download: nada chegou à pasta, a faixa
+					# continua pendente para a próxima vez.
+					self.sig_row_status.emit(row_idx, "Stopped")
+					break
 
 				payload["error"] = error_msg
 				if error_msg is None:

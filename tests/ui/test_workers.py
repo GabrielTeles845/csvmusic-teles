@@ -331,3 +331,74 @@ def test_failed_match_falls_back_only_to_confident_scored_results(monkeypatch, t
 	assert tried == ["best", "second"]
 	assert results[0]["downloaded"] is True
 	assert results[0]["match"]["videoId"] == "second"
+
+
+def test_stop_during_download_ends_batch_without_counting_a_failure(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import DownloadCancelled
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.tracks_override[0]["preferred_video_id"] = "first"
+	worker.tracks_override.append(dict(worker.tracks_override[0], title="Next", preferred_video_id="second"))
+	worker.row_indices = [0, 1]
+	tried = []
+	results = []
+	statuses = []
+	finished = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	worker.sig_row_status.connect(lambda row, text: statuses.append((row, text)))
+	worker.sig_done.connect(lambda message, done, skipped, failed: finished.append((message, done, skipped, failed)))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+
+	def fake_download(video_id, *_args, **_kwargs):
+		tried.append(video_id)
+		worker.stop()
+		raise DownloadCancelled("Stopped by user.")
+
+	monkeypatch.setattr(worker, "_download_with_profile", fake_download)
+	worker.run()
+
+	assert tried == ["first"]
+	assert results == []
+	assert statuses[-1] == (0, "Stopped")
+	assert finished[0][0].startswith("Stopped")
+	assert finished[0][3] == []
+
+
+def test_stop_signals_the_running_download():
+	worker = workers.PipelineWorker("", "", None, "mp3", False, False, False, None, None, None, None)
+	assert not worker._cancel.is_set()
+	worker.stop()
+	assert worker._cancel.is_set()
+
+
+def test_closing_main_window_never_terminates_a_worker_thread():
+	from csvmusic.ui.main_window import MainWindow
+
+	class StuckThread:
+		def __init__(self):
+			self.calls = []
+
+		def stop(self):
+			self.calls.append("stop")
+
+		def requestInterruption(self):
+			pass
+
+		def quit(self):
+			pass
+
+		def isRunning(self):
+			return True
+
+		def wait(self, ms):
+			self.calls.append(("wait", ms))
+			return False
+
+		def terminate(self):
+			self.calls.append("terminate")
+
+	thread = StuckThread()
+	MainWindow._shutdown_thread(None, thread, wait_ms=10)
+
+	assert "stop" in thread.calls
+	assert "terminate" not in thread.calls

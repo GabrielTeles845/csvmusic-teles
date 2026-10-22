@@ -1,5 +1,5 @@
 # tabs only
-import os, pathlib, subprocess, requests, io, contextlib, json, base64, hashlib, shutil, time
+import os, pathlib, subprocess, requests, io, contextlib, json, base64, hashlib, shutil, threading, time
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, List
 import re, unicodedata
@@ -35,6 +35,10 @@ class DownloadError(Exception): pass
 
 class AgeRestrictedError(DownloadError):
 	"""The selected video needs an eligible authenticated YouTube session."""
+
+
+class DownloadCancelled(DownloadError):
+	"""The user pressed Stop; the running yt-dlp/ffmpeg was ended."""
 
 
 class YouTubeRiskError(DownloadError):
@@ -123,8 +127,38 @@ def _run(cmd: list[str]) -> int:
 		log(f"yt-dlp command failed rc={proc.returncode} cmd={' '.join(cmd)} stderr={err[:500]} stdout={out[:200]}")
 	return proc.returncode
 
-def _run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-	return subprocess.run(
+# Uma música de 10 min a 900 KB/s leva ~1 min; 10 min de silêncio é travamento.
+YTDLP_TIMEOUT_S = 600.0
+FFMPEG_TIMEOUT_S = 600.0
+_POLL_S = 0.25
+_cancel_state = threading.local()
+
+
+@contextlib.contextmanager
+def cancellation_scope(event: threading.Event):
+	"""Let ``event.set()`` (from any thread) end the yt-dlp/ffmpeg running in this thread."""
+	previous = getattr(_cancel_state, "event", None)
+	_cancel_state.event = event
+	try:
+		yield event
+	finally:
+		_cancel_state.event = previous
+
+
+def _cancel_requested() -> bool:
+	event = getattr(_cancel_state, "event", None)
+	return bool(event is not None and event.is_set())
+
+
+def _raise_if_cancelled() -> None:
+	if _cancel_requested():
+		raise DownloadCancelled("Stopped by user.")
+
+
+def _run_capture(cmd: list[str], *, timeout: float = FFMPEG_TIMEOUT_S) -> subprocess.CompletedProcess[str]:
+	"""Run a tool, killing it on Stop or after ``timeout`` seconds."""
+	_raise_if_cancelled()
+	proc = subprocess.Popen(
 		cmd,
 		stdout=subprocess.PIPE,
 		stderr=subprocess.PIPE,
@@ -133,27 +167,72 @@ def _run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 		errors="replace",
 		**subprocess_kwargs()
 	)
+	deadline = time.monotonic() + timeout
+	while True:
+		try:
+			stdout, stderr = proc.communicate(timeout=_POLL_S)
+			return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+		except subprocess.TimeoutExpired:
+			cancelled = _cancel_requested()
+			if not cancelled and time.monotonic() < deadline:
+				continue
+			proc.kill()
+			proc.communicate()
+			name = pathlib.Path(str(cmd[0])).name if cmd else "tool"
+			if cancelled:
+				log(f"{name} killed: stopped by user")
+				raise DownloadCancelled("Stopped by user.")
+			log(f"{name} killed after {timeout:g}s timeout")
+			raise DownloadError(f"{name} did not finish within {timeout:g} seconds")
+
+
+class _InProcessAbort(BaseException):
+	"""Raised inside the in-process yt-dlp to stop it (BaseException so yt-dlp does not swallow it)."""
+
+
+class _AbortableBuffer(io.StringIO):
+	"""Output buffer that ends the in-process yt-dlp on Stop or timeout at its next write."""
+
+	def __init__(self, deadline: float):
+		super().__init__()
+		self.deadline = deadline
+
+	def write(self, text: str) -> int:
+		if _cancel_requested():
+			raise _InProcessAbort("cancelled")
+		if time.monotonic() > self.deadline:
+			raise _InProcessAbort("timeout")
+		return super().write(text)
+
 
 def _run_ytdlp_module(args: list[str]) -> tuple[int, str, str]:
-	stdout_buf = io.StringIO()
-	stderr_buf = io.StringIO()
+	# Rodando no mesmo processo não dá para matar o yt-dlp; ele para na próxima
+	# linha que escrever (o progresso escreve o tempo todo).
+	deadline = time.monotonic() + YTDLP_TIMEOUT_S
+	stdout_buf = _AbortableBuffer(deadline)
+	stderr_buf = _AbortableBuffer(deadline)
 	try:
 		from yt_dlp import main as yt_dlp_main
 	except Exception as exc:
 		return 1, "", f"failed to import yt_dlp module: {exc}"
-	with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-		try:
-			rc = yt_dlp_main(args)
-		except SystemExit as exc:
-			code = exc.code
-			if isinstance(code, int):
-				rc = code
-			elif code is None:
-				rc = 0
-			else:
-				rc = 1
-		except Exception as exc:
-			return 1, stdout_buf.getvalue(), f"{stderr_buf.getvalue()}\n{exc}".strip()
+	try:
+		with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+			try:
+				rc = yt_dlp_main(args)
+			except SystemExit as exc:
+				code = exc.code
+				if isinstance(code, int):
+					rc = code
+				elif code is None:
+					rc = 0
+				else:
+					rc = 1
+			except Exception as exc:
+				return 1, stdout_buf.getvalue(), f"{stderr_buf.getvalue()}\n{exc}".strip()
+	except _InProcessAbort as abort:
+		if str(abort) == "cancelled":
+			raise DownloadCancelled("Stopped by user.") from None
+		raise DownloadError(f"yt-dlp did not finish within {YTDLP_TIMEOUT_S:g} seconds") from None
 	return int(rc or 0), stdout_buf.getvalue(), stderr_buf.getvalue()
 
 def _summarize_tool_output(stderr: str, stdout: str, *, using_cookies: bool = False) -> str:
@@ -297,13 +376,14 @@ def _run_ytdlp(cmd: list[str]) -> int:
 
 
 def _run_ytdlp_detail(cmd: list[str]) -> tuple[int, str]:
+	_raise_if_cancelled()
 	capture_source("")
 	cmd = cmd[:1] + ["--no-simulate", "--print", "after_move:%(.{id,format_id,acodec,vcodec,abr,tbr})j"] + cmd[1:]
 	# Never silently discard an explicitly selected authenticated session.
 	if cmd and cmd[0] == INTERNAL_YTDLP:
 		rc, stdout, stderr = _run_ytdlp_module(cmd[1:])
 	else:
-		proc = _run_capture(cmd)
+		proc = _run_capture(cmd, timeout=YTDLP_TIMEOUT_S)
 		rc, stdout, stderr = proc.returncode, proc.stdout or "", proc.stderr or ""
 	if rc == 0:
 		capture_source(stdout)
@@ -345,7 +425,13 @@ def _run_ytdlp_attempts(attempts: list[tuple[list[str], str]], *, label: str, vi
 	"""
 	details: list[str] = []
 	for cmd, description in attempts:
-		rc, detail = _run_ytdlp_detail(cmd)
+		try:
+			rc, detail = _run_ytdlp_detail(cmd)
+		except (AgeRestrictedError, YouTubeRiskError, DownloadCancelled):
+			raise
+		except DownloadError as exc:
+			# Timeout of one attempt: the next client may still work.
+			rc, detail = 1, str(exc)
 		if rc == 0:
 			log(f"{label}: {description} succeeded video_id={video_id}")
 			return

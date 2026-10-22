@@ -400,3 +400,69 @@ def test_failed_video_is_never_replaced_by_an_unchecked_youtube_search(monkeypat
 	assert len(calls) == expected_calls
 	assert not any(arg.startswith("ytsearch") for call in calls for arg in call)
 	assert all(call[-1].endswith("v=video") for call in calls)
+
+
+def _sleeper_cmd(seconds: float) -> list[str]:
+	import sys
+	return [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+
+
+def test_stuck_tool_is_killed_after_timeout():
+	import time
+	started = time.monotonic()
+	with pytest.raises(downloader.DownloadError, match="did not finish"):
+		downloader._run_capture(_sleeper_cmd(30), timeout=0.5)
+	assert time.monotonic() - started < 10
+
+
+def test_stop_kills_the_running_tool_right_away():
+	import threading
+	import time
+	event = threading.Event()
+	threading.Timer(0.3, event.set).start()
+	started = time.monotonic()
+	with downloader.cancellation_scope(event):
+		with pytest.raises(downloader.DownloadCancelled):
+			downloader._run_capture(_sleeper_cmd(30))
+	assert time.monotonic() - started < 10
+
+
+def test_stop_ends_in_process_ytdlp_at_its_next_output(monkeypatch):
+	import sys
+	import threading
+	import time
+	import yt_dlp
+	event = threading.Event()
+
+	def fake_main(_args):
+		for n in range(400):
+			if n == 3:
+				event.set()
+			sys.stdout.write(f"[download] {n}%\n")
+			time.sleep(0.01)
+		return 0
+
+	monkeypatch.setattr(yt_dlp, "main", fake_main)
+	with downloader.cancellation_scope(event):
+		with pytest.raises(downloader.DownloadCancelled):
+			downloader._run_ytdlp_module(["url"])
+	assert sys.stdout.__class__.__name__ != "_AbortableBuffer"
+
+
+def test_stop_before_next_attempt_skips_remaining_clients(monkeypatch, tmp_path):
+	import threading
+	event = threading.Event()
+	calls = []
+
+	def fail(args):
+		calls.append(args)
+		event.set()
+		return 1, "", "ERROR: Video unavailable"
+
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with downloader.cancellation_scope(event):
+		with pytest.raises(downloader.DownloadCancelled):
+			downloader.download_mp3("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert len(calls) == 1
+	assert not (tmp_path / downloader.STAGING_DIR_NAME).exists()
