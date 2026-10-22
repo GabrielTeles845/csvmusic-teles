@@ -29,7 +29,7 @@ img { display: block; }
 	gap: 4px; overflow: auto; min-height: 0;
 }
 main#main { grid-row: 1; overflow: auto; min-height: 0; position: relative; background: var(--bg); }
-main#main.com-topo { background: linear-gradient(180deg, var(--hero-top) 0px, var(--hero-mid) 260px, var(--bg) 420px); }
+main#main.com-topo { background: linear-gradient(180deg, var(--hero-top) 0px, var(--hero-mid) 260px, var(--bg) 420px) var(--bg); background-attachment: local; }
 
 /* ---------- Botões ---------- */
 .btn {
@@ -269,15 +269,15 @@ main#main.com-topo { background: linear-gradient(180deg, var(--hero-top) 0px, va
 }
 .vazio-pg li span { padding-top: 4px; }
 .erro-pg { padding: 72px 48px; max-width: 560px; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
-.erro-pg .i { width: 28px; height: 28px; color: var(--err); }
-.erro-pg h1 { font-size: 28px; font-weight: 800; }
+.erro-pg > .i { width: 28px; height: 28px; color: var(--err); }
+.erro-pg h1 { font-size: 28px; font-weight: 800; line-height: 1.15; }
 .erro-pg p { color: var(--mut); }
 
 /* ---------- Celular ---------- */
 @media (max-width: 760px) {
 	.app { grid-template-columns: 1fr; }
 	.side { display: none; }
-	main#main.com-topo { background: linear-gradient(180deg, var(--hero-top) 0px, var(--hero-mid) 220px, var(--bg) 380px); }
+	main#main.com-topo { background: linear-gradient(180deg, var(--hero-top) 0px, var(--hero-mid) 220px, var(--bg) 380px) var(--bg); background-attachment: local; }
 	.topo-m { display: flex; align-items: center; gap: 4px; padding: 10px 16px; }
 	.topo-m .marca { padding: 0; margin-right: auto; color: var(--hero-ink); }
 	main#main:not(.com-topo) .topo-m .marca { color: var(--ink); }
@@ -332,3 +332,13 @@ main#main.com-topo { background: linear-gradient(180deg, var(--hero-top) 0px, va
 	.erro-pg { padding: 32px 16px; }
 	.erro-pg .btn { width: 100%; }
 }
+
+/* Playlist sem música lida: filtros, busca e cabeçalho da lista saem; fica a mensagem. */
+main#main.sem-musicas .fil, main#main.sem-musicas .fil-dir, main#main.sem-musicas .cab { display: none; }
+
+/* Brilho: tamanhos de bloco e contraste por superfície. */
+.sh-blk { min-height: 1em; }
+.sh-cheio { height: 100%; border-radius: inherit; }
+.ck .sh, .lista-simples .sh-blk { width: 18px; height: 18px; }
+.side .sh, .gaveta .sh { --sh1: var(--line); --sh2: var(--pill); }
+.chip .sh { --sh1: color-mix(in srgb, currentColor 20%, transparent); --sh2: color-mix(in srgb, currentColor 32%, transparent); }

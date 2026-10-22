@@ -10,7 +10,7 @@ import { aplicarTema } from "./tema.js";
 const ABAS = [
 	["downloads", "Downloads", "download"],
 	["som", "Som", "audio-lines"],
-	["conta", "Conta do YouTube", "user"],
+	["conta", "Conta do YouTube", "user", "Conta"],
 	["avancado", "Avançado", "sliders-horizontal"],
 	["aparencia", "Aparência", "sun-moon"],
 	["biblioteca", "Biblioteca", "library"],
@@ -28,8 +28,8 @@ export function abrirAjustes(qual) {
 		titulo: "Ajustes",
 		largo: true,
 		corpo: `<div class="ajustes">
-			<nav role="tablist" aria-label="Seções dos ajustes" aria-orientation="vertical">${ABAS.map(([k, r, ic]) =>
-				`<button role="tab" data-aba="${k}" aria-selected="${k === aba}">${icon(ic)}${r}</button>`).join("")}</nav>
+			<nav role="tablist" aria-label="Seções dos ajustes" aria-orientation="vertical">${ABAS.map(([k, r, ic, curto]) =>
+				`<button role="tab" data-aba="${k}" aria-selected="${k === aba}" aria-label="${r}">${icon(ic)}${curto ? `<span class="so-d">${r}</span><span class="so-m">${curto}</span>` : r}</button>`).join("")}</nav>
 			<section role="tabpanel" tabindex="-1"></section>
 		</div>`,
 		pe: `<span class="salvo" data-salvo aria-live="polite"></span><button class="btn" data-fechar-pe>Fechar</button>`,
@@ -77,7 +77,7 @@ function pasta(k, titulo, proposito, ajuda, vazio = "Nenhuma pasta escolhida") {
 		<div class="linha-campo">
 			${cfg ? `<span class="caminho${val ? "" : " vazio"}">${esc(val || vazio)}</span>` : `<span class="caminho">${brilhoValor("70%")}</span>`}
 			<button class="btn" data-pasta="${k}" data-proposito="${proposito}" ${cfg ? "" : "disabled"}>${icon("folder-open")}Escolher…</button>
-			${val ? `<button class="btn" data-limpar="${k}">Limpar</button>` : ""}
+			${val && k !== "output_dir" ? `<button class="btn" data-limpar="${k}">Limpar</button>` : ""}
 		</div>${ajuda ? `<span class="ajuda">${esc(ajuda)}</span>` : ""}</div>`;
 }
 
@@ -103,7 +103,7 @@ function escolha(k, titulo, itens, ajuda) {
 	const atual = v(k);
 	const rot = (itens.find(([x]) => x === atual) || [null, atual || "Nenhum"])[1];
 	return `<div class="campo"><span class="rot">${esc(titulo)}</span>
-		<div><button class="btn" data-escolha="${k}" aria-haspopup="menu" style="min-width:240px;justify-content:space-between" ${cfg ? "" : "disabled"}>
+		<div><button class="btn escolha" data-escolha="${k}" aria-haspopup="menu" ${cfg ? "" : "disabled"}>
 			<span>${cfg ? esc(rot) : sh("6em")}</span>${icon("chevron-down")}</button></div>
 		${ajuda ? `<span class="ajuda">${esc(ajuda)}</span>` : ""}</div>`;
 }

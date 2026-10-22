@@ -18,7 +18,7 @@ export const teclaCmd = MAC ? "⌘" : "Ctrl+";
 function itens() {
 	if (store.erro) return "";
 	if (!store.carregado) {
-		return [0, 1, 2, 3].map((i) => `<div class="pl" aria-hidden="true"><span class="pm">${sh("100%", "sh-blk")}</span>
+		return [0, 1, 2, 3].map((i) => `<div class="pl" aria-hidden="true"><span class="pm um">${sh("100%", "sh-blk sh-cheio")}</span>
 			<span class="pt"><b>${sh(["8em", "6em", "9em", "5em"][i])}</b><small>${sh(["7em", "8em", "6em", "7em"][i])}</small></span></div>`).join("");
 	}
 	const f = filtro.toLocaleLowerCase("pt-BR");

@@ -22,8 +22,16 @@ export function demoAdicionar() {
 				<div class="side-cab"><span>Playlists</span></div>
 				<div class="pl ativo"><span class="pm demo-pm"><i></i><i></i><i></i><i></i></span>
 					<span class="pt"><b>Minha playlist</b><small><span class="demo-s1">Spotify · Analisando</span><span class="demo-s2">Spotify · 0 de 48</span></small></span></div>
-				<div class="demo-analise"><div class="demo-lin"><span>Lendo as músicas e procurando no YouTube Music</span></div><div class="barra"><i></i></div></div>
-				<span class="btn pri demo-baixar">${icon("download")}Baixar as 48 que faltam</span>
+				<div class="demo-fim">
+					<div class="demo-analise"><div class="demo-lin"><span>Lendo as músicas e procurando no YouTube Music</span></div><div class="barra"><i></i></div></div>
+					<span class="btn pri demo-baixar">${icon("download")}Baixar as 48 que faltam</span>
+				</div>
+				<div class="lista demo-linhas">${[["Primeira música", "Artista Exemplo"], ["Segunda música", "Banda Exemplo"], ["Terceira música", "Artista Exemplo"]].map(([t, a], i) => `
+					<div class="row tom-mut${i % 2 ? " par" : ""}"><span class="ck"><input type="checkbox" checked tabindex="-1"></span>
+						<span class="n">${i + 1}</span><span class="cv demo-cv${i}"></span>
+						<span class="t"><b>${t}</b><small>${a}</small><em class="stm">${icon("circle-dashed")}Faltando</em></span>
+						<span class="al"></span><span class="d"></span><span class="st">${icon("circle-dashed")}<span>Faltando</span></span></div>`).join("")}
+				</div>
 			</div>
 		</div>
 	</div>`;

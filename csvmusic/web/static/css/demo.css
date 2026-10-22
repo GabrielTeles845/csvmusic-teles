@@ -12,7 +12,7 @@
 }
 .demo-palco { display: grid; zoom: .8; }
 .demo-palco > * { grid-area: 1 / 1; }
-.demo-q { display: flex; flex-direction: column; min-height: 320px; }
+.demo-q { display: flex; flex-direction: column; }
 .demo-cab { padding: 2px 0 14px; }
 .demo-cab b { font-size: 20px; font-weight: 700; }
 .demo .abas .aba { pointer-events: none; }
@@ -35,7 +35,9 @@
 .demo-lin { color: var(--mut); font-size: 13px; }
 .demo-analise .barra { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .demo-analise .barra i { display: block; height: 100%; width: 0; background: var(--acc); border-radius: 2px; }
-.demo-baixar { align-self: flex-start; margin: 12px 10px 0; }
+.demo-fim { display: grid; align-items: start; }
+.demo-fim > * { grid-area: 1 / 1; }
+.demo-baixar { justify-self: start; margin: 8px 10px 0; }
 
 /* Linha do tempo */
 .demo-a { animation: demo-a 12s infinite; }
@@ -76,3 +78,12 @@
 	.demo-baixar { opacity: 1; }
 	.demo-txt { clip-path: none; }
 }
+
+/* Linhas de exemplo no fim: as mesmas classes da lista real, sem a posição da lista virtual. */
+.demo-linhas { padding: 14px 0 0; --rh: 52px; }
+.demo-linhas .row { position: static; cursor: default; }
+.demo-linhas .ck input { pointer-events: none; }
+.demo-linhas .demo-cv0 { background: #c9873a; } .demo-linhas .demo-cv1 { background: #3f6f8f; } .demo-linhas .demo-cv2 { background: #8f3f5c; }
+.demo-linhas { animation: demo-baixar 12s infinite; }
+@media (prefers-reduced-motion: reduce) { .demo-linhas { opacity: 1; } }
+@media (max-width: 760px) { .demo-linhas { --rh: 74px; } .demo-linhas .row:nth-child(n+2) { display: none; } }

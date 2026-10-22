@@ -10,9 +10,10 @@ export function abrirAjuda(secao) {
 	const d = dialogo({
 		titulo: "Ajuda",
 		largo: true,
-		corpo: `<div style="padding:0 24px 24px;overflow:auto;flex:1;min-height:0" class="ajuda-txt">
+		corpo: `<div class="ajuda-txt ajuda-rolagem"><div class="ajuda-grade">
+			<div class="ajuda-demo">${demoAdicionar()}</div>
+			<div>
 			<p>Cole o link de uma playlist. O CSVMusic lê as músicas, procura cada uma no YouTube Music e baixa em arquivo de áudio, com capa e nome certos.</p>
-			<div style="margin:16px 0 4px;max-width:520px">${demoAdicionar()}</div>
 			<h3>Depois de analisar</h3>
 			<ul>
 				<li><b>Baixar as que faltam</b> baixa só o que ainda não está na pasta.</li>
@@ -35,6 +36,7 @@ export function abrirAjuda(secao) {
 			<h3 data-sobre>Sobre</h3>
 			<p>CSVMusic ${esc(store.version)}. Versão pessoal do <a href="https://github.com/angall1/CSVMusic" target="_blank" rel="noopener">CSVMusic de angall1</a>, com yt-dlp e FFmpeg. Fonte Figtree (OFL) e ícones Lucide (ISC).</p>
 			<p style="margin-top:8px">Baixe só o que você tem direito de guardar.</p>
+			</div></div>
 		</div>`,
 		pe: `<button class="btn" data-fechar-pe>Fechar</button>`,
 	});

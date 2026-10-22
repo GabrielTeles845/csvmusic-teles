@@ -289,3 +289,21 @@ button.item-ap[aria-selected="true"] { background: var(--sel); }
 .lista-simples label { cursor: pointer; }
 .lista-simples label.desligada { cursor: default; }
 .lista-simples label.desligada b { color: var(--off); }
+.campo > .seg { align-self: flex-start; }
+.btn.escolha { min-width: 240px; justify-content: space-between; }
+@media (max-width: 760px) {
+	.campo > .seg { align-self: stretch; }
+	.btn.escolha { width: 100%; }
+}
+.ajuda-rolagem { padding: 0 24px 24px; overflow: auto; flex: 1; min-height: 0; }
+.ajuda-grade { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 32px; align-items: start; }
+.ajuda-grade > div:last-child { grid-column: 1; grid-row: 1; }
+.ajuda-grade > div:last-child > p:first-child { margin-top: 2px; }
+.ajuda-demo { grid-column: 2; grid-row: 1; position: sticky; top: 0; }
+.gaveta .addb kbd { display: none; }
+@media (max-width: 760px) {
+	.ajuda-rolagem { padding: 0 16px 16px; }
+	.ajuda-grade { grid-template-columns: 1fr; gap: 16px; }
+	.ajuda-demo, .ajuda-grade > div:last-child { grid-column: 1; grid-row: auto; position: static; }
+}
+.alertas .sh-blk { width: 16px; height: 16px; }

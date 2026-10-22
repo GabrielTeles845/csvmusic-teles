@@ -41,6 +41,7 @@ function classeTitulo(nome) {
 
 function linhaContagens(pl) {
 	if (pl.scan_state === "never") return `<span><b>Ainda não analisada</b></span>`;
+	if (!pl.counts?.total) return `<span><b>Nenhuma música lida</b></span>`;
 	const c = pl.counts || {};
 	const partes = [`<b>${n(c.downloaded)} de ${n(c.total)} baixadas</b>`];
 	if (c.missing) partes.push(`${n(c.missing)} faltando`);
@@ -66,6 +67,9 @@ function avisosDaPlaylist(pl) {
 	return out.length ? `<div class="avisos">${out.join("")}</div>` : "";
 }
 
+// Nunca analisada ou sem nenhuma música lida (ex.: particular): só a ação de analisar faz sentido.
+const semMusicas = (pl) => pl.scan_state === "never" || !pl.counts?.total;
+
 function botoesAcao(pl) {
 	const job = store.job || {};
 	const ocupado = !!job.kind;
@@ -73,16 +77,17 @@ function botoesAcao(pl) {
 	const baixando = job.kind === "download" && (job.playlist_ids || []).includes(pl.id);
 	const faltam = pl.counts?.missing || 0;
 	let pri;
-	if (pl.scan_state === "never") {
-		pri = `<button class="btn pri" data-a="analisar" ${analisando ? "disabled" : ""}>${icon("refresh-cw")}${analisando ? "Analisando" : "Analisar agora"}</button>`;
+	if (semMusicas(pl)) {
+		const rot = pl.scan_state === "never" ? "Analisar agora" : "Analisar de novo";
+		pri = `<button class="btn pri" data-a="analisar" ${analisando ? "disabled" : ""}>${icon("refresh-cw")}${analisando ? "Analisando" : rot}</button>`;
 	} else if (baixando) {
 		pri = `<button class="btn pri" disabled>${icon("download")}Baixando</button>`;
 	} else if (faltam) {
-		pri = `<button class="btn pri" data-a="baixar" ${ocupado && job.kind === "download" ? "disabled" : ""}>${icon("download")}${faltam === 1 ? "Baixar a que falta" : `Baixar as ${n(faltam)} que faltam`}</button>`;
+		pri = `<button class="btn pri" data-a="baixar" ${ocupado ? "disabled" : ""}>${icon("download")}${faltam === 1 ? "Baixar a que falta" : `Baixar as ${n(faltam)} que faltam`}</button>`;
 	} else {
 		pri = `<button class="btn pri" disabled>${icon("check")}Nada faltando</button>`;
 	}
-	const sec = pl.scan_state === "never" ? "" :
+	const sec = semMusicas(pl) ? "" :
 		`<button class="btn" data-a="analisar" ${analisando ? "disabled" : ""}>${icon("refresh-cw")}${analisando ? "Analisando" : "Analisar de novo"}</button>`;
 	return `${pri}${sec}<button class="btn ic" data-a="mais" aria-label="Mais ações da playlist" aria-haspopup="menu">${icon("ellipsis")}</button>`;
 }
@@ -161,8 +166,8 @@ function listaVazia() {
 	const pl = store.playlists.get(vista.id);
 	if (vista.q) return msgLista(`Nada encontrado para “${vista.q}”`, "Confira a grafia ou procure pelo nome do artista.", { rotulo: "Limpar a busca", icone: "x", acao: () => limparBusca() });
 	if (vista.filtro !== "all") return msgLista("Nenhuma música neste filtro", "", { rotulo: "Ver todas", acao: () => trocarFiltro("all") });
-	if (pl?.access_error === "private") return msgLista("O Spotify não mostrou as músicas", "Torne a playlist pública no Spotify e toque em Analisar de novo.", { rotulo: "Analisar de novo", icone: "refresh-cw", pri: true, acao: () => acoes.analisar({ playlist_ids: [pl.id] }) });
-	if (pl?.scan_state === "never") return msgLista("As músicas aparecem depois da análise", "A análise lê a playlist e procura cada música no YouTube Music. Nada é baixado ainda.", { rotulo: "Analisar agora", icone: "refresh-cw", pri: true, acao: () => acoes.analisar({ playlist_ids: [pl.id] }) });
+	if (pl?.access_error) return msgLista("Nenhuma música lida ainda", "Elas aparecem aqui depois que a análise conseguir ler a playlist.");
+	if (pl?.scan_state === "never") return msgLista("As músicas aparecem depois da análise", "A análise lê a playlist e procura cada música no YouTube Music. Nada é baixado ainda.");
 	return msgLista("Esta playlist está vazia", "Quando ela tiver músicas, analise de novo.");
 }
 
@@ -178,14 +183,12 @@ export function mostrarCarregando() {
 	m.className = "com-topo";
 	m.innerHTML = `${topoCelular()}
 		<div class="hero" aria-busy="true">
-			<div class="pm">${sh("100%", "sh-blk")}</div>
+			<div class="pm um">${sh("100%", "sh-blk sh-cheio")}</div>
 			<div class="hero-txt"><small class="tipo">${sh("9em")}</small><h1>${sh("min(520px, 100%)", "sh-txt")}</h1><p class="cont">${sh("18em")}</p></div>
 		</div>
 		<div class="acoes"><button class="btn pri" disabled>${icon("download")}Baixar o que falta</button><button class="btn" disabled>${icon("refresh-cw")}Analisar de novo</button><button class="btn ic" disabled aria-label="Mais ações da playlist">${icon("ellipsis")}</button>${buscaHtml()}</div>
 		${filtrosHtml(null)}
 		<div class="lista">${CABECALHO}<div class="vbody"></div></div>`;
-	m.querySelector(".hero .pm").style.overflow = "hidden";
-	m.querySelector(".hero .pm .sh").style.height = "100%";
 	const corpo = m.querySelector(".vbody");
 	corpo.style.height = 8 * (parseFloat(getComputedStyle(corpo).getPropertyValue("--rh")) || 52) + "px";
 	for (let i = 0; i < 8; i++) { const r = linhaBrilho(i); r.style.top = `calc(var(--rh) * ${i})`; corpo.append(r); }
@@ -202,6 +205,7 @@ export function mostrarPlaylist(id, { manterFiltro = false } = {}) {
 	tingir(pl);
 	const m = main();
 	m.className = "com-topo";
+	m.classList.toggle("sem-musicas", semMusicas(pl));
 	m.scrollTop = 0;
 	m.innerHTML = `${topoCelular()}
 		<div class="hero">${mosaico(pl)}
@@ -403,8 +407,9 @@ export function atualizarResumo(pl) {
 	pintarAcoes();
 	vista.contagens = pl.counts || vista.contagens;
 	pintarChips();
-	const eraNunca = vista.lista && vista.lista.total === 0 && pl.scan_state !== "never";
-	if (eraNunca) vista.lista.iniciar();
+	const eraVazia = m.classList.contains("sem-musicas");
+	m.classList.toggle("sem-musicas", semMusicas(pl));
+	if (eraVazia && !semMusicas(pl)) vista.lista?.iniciar();
 }
 
 function pintarAcoes() {
