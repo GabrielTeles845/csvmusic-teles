@@ -300,3 +300,34 @@ def test_pipeline_tags_the_file_before_it_appears_in_the_playlist(monkeypatch, t
 	assert tagged[0][0].parent.name == STAGING_DIR_NAME
 	assert tagged[0][1] is False
 	assert final.read_bytes() == b"new audio"
+
+
+def test_failed_match_falls_back_only_to_confident_scored_results(monkeypatch, tmp_path):
+	worker = _pipeline(tmp_path, force_download=False)
+	options = [
+		{"videoId": "best", "title": "Complicated", "author": "Avril Lavigne", "source": "music", "score": 0.9},
+		{"videoId": "wrong-length", "title": "Complicated", "author": "Avril Lavigne", "source": "music", "score": 0.85, "duration_mismatch": True},
+		{"videoId": "weak", "title": "Complicated (Cover)", "author": "Someone", "source": "video", "score": 0.4},
+		{"videoId": "second", "title": "Complicated", "author": "Avril Lavigne", "source": "video", "score": 0.7},
+	]
+	tried = []
+	results = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: (options[0], 0.9, options))
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+
+	def fake_download(video_id, destination, base_name, _profile, **_kwargs):
+		tried.append(video_id)
+		if video_id == "best":
+			raise RuntimeError("yt-dlp failed for mp3: Video unavailable")
+		path = destination / f"{base_name}.mp3"
+		path.write_bytes(b"audio")
+		return path
+
+	monkeypatch.setattr(worker, "_download_with_profile", fake_download)
+	worker.run()
+
+	assert tried == ["best", "second"]
+	assert results[0]["downloaded"] is True
+	assert results[0]["match"]["videoId"] == "second"

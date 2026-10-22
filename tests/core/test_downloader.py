@@ -379,3 +379,24 @@ def test_m4a_only_copies_streams_apple_devices_can_play(monkeypatch, tmp_path, c
 	assert len(writes) == 1
 	encoder = writes[0][writes[0].index("-c:a") + 1]
 	assert encoder == ("copy" if expect_copy else "aac")
+
+
+@pytest.mark.parametrize("download, expected_calls", [
+	(downloader.download_m4a, 2 * len(downloader.YOUTUBE_CLIENTS) * 2),
+	(downloader.download_mp3, 2 * len(downloader.YOUTUBE_CLIENTS)),
+	(downloader.download_opus, 2 * len(downloader.YOUTUBE_CLIENTS)),
+])
+def test_failed_video_is_never_replaced_by_an_unchecked_youtube_search(monkeypatch, tmp_path, download, expected_calls):
+	calls = []
+	def fail(args):
+		calls.append(args)
+		return 1, "", "ERROR: Video unavailable"
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+
+	with pytest.raises(downloader.DownloadError):
+		download("video", tmp_path, "07- Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+
+	assert len(calls) == expected_calls
+	assert not any(arg.startswith("ytsearch") for call in calls for arg in call)
+	assert all(call[-1].endswith("v=video") for call in calls)

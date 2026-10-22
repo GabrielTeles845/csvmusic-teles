@@ -140,6 +140,32 @@ def _run_yt_dlp_command(cmd: list[str], *, timeout: int) -> subprocess.Completed
 		**subprocess_kwargs()
 	)
 
+_MAX_CONFIDENT_BACKUPS = 2
+
+
+def _confident_backup_candidates(match: Dict | None, options: List[Dict]) -> List[Dict]:
+	"""The match plus the next results that passed the same score as the search.
+
+	Replaces the old ``ytsearch1:`` fallback, which downloaded an unchecked video
+	when the chosen one failed. Results flagged ``duration_mismatch`` never count.
+	"""
+	if not match:
+		return []
+	sequence = [match]
+	seen = {match.get("videoId")}
+	for option in options:
+		if len(sequence) > _MAX_CONFIDENT_BACKUPS:
+			break
+		vid = option.get("videoId")
+		if not vid or vid in seen or option.get("duration_mismatch"):
+			continue
+		if float(option.get("score", 0.0) or 0.0) < CONFIDENCE_MIN:
+			continue
+		seen.add(vid)
+		sequence.append(option)
+	return sequence
+
+
 class PipelineWorker(QThread):
 	sig_log = Signal(str)                       # log strings
 	sig_warning = Signal(str)                   # warning dialog text
@@ -281,7 +307,7 @@ class PipelineWorker(QThread):
 
 	def _ordered_force_candidates(self, track: Dict, match: Dict | None, options: List[Dict]) -> List[Dict]:
 		if not self.force_download:
-			return [match] if match else []
+			return _confident_backup_candidates(match, options)
 		ordered = self._force_download_candidates(track, options)
 		if match and match.get("videoId"):
 			match_vid = match.get("videoId")

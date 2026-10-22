@@ -335,6 +335,10 @@ def _join_attempt_details(details: list[str]) -> str:
 def _run_ytdlp_attempts(attempts: list[tuple[list[str], str]], *, label: str, video_id: str) -> None:
 	"""Run yt-dlp attempts in order until one succeeds.
 
+	Only the chosen video is ever downloaded. There is no ``ytsearch1:``
+	fallback: it fetched the first YouTube hit for the file name without any
+	check. When a video fails, the pipeline tries the next scored candidate.
+
 	Age restriction and YouTube risk signals stop the sequence at once: trying
 	the remaining clients would only send more requests to a session that is
 	already being blocked. Every failure detail is kept for the final error.
@@ -805,10 +809,6 @@ def download_m4a(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp
 				extractor_args = _extractor_args(client)
 				attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"primary client={client} url={base_url}"))
 				attempts.append((fallback_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"fallback client={client} url={base_url}"))
-		search_url = f"ytsearch1:{base_name}"
-		for client in _youtube_clients(cookies_args):
-			extractor_args = _extractor_args(client)
-			attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, search_url], f"search fallback query='{base_name}' client={client}"))
 		_run_ytdlp_attempts(attempts, label="download_m4a", video_id=video_id)
 
 		# What got written?
@@ -872,9 +872,6 @@ def download_mp3(video_id: str, dst_dir: pathlib.Path, base_name: str, cbr_320: 
 		for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
 			for client in _youtube_clients(cookies_args):
 				attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), base_url], f"client={client} url={base_url}"))
-		search_url = f"ytsearch1:{base_name}"
-		for client in _youtube_clients(cookies_args):
-			attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), search_url], f"search fallback query='{base_name}' client={client}"))
 		_run_ytdlp_attempts(attempts, label="download_mp3", video_id=video_id)
 
 		# yt-dlp may append extension to .tmp; find it
