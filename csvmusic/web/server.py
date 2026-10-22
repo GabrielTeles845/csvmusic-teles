@@ -364,7 +364,7 @@ class WebServer:
 		return self.call(self.engine.open_library, str(body.get("path") or ""))
 
 	def api_library_save_as(self, match, query, body):
-		return self.call(self.engine.save_library_as, str(body.get("path") or ""))
+		return self.call(self.engine.save_library_as, str(body.get("path") or ""), overwrite=bool(body.get("overwrite")))
 
 	def api_open(self, match, query, body):
 		index = body.get("index")

@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
 		self._action(file_menu, "Importar planilha…", self._import_csv)
 		file_menu.addSeparator()
 		self._action(file_menu, "Abrir biblioteca…", self._open_library)
-		self._action(file_menu, "Salvar biblioteca como…", self._save_library_as)
+		self._action(file_menu, "Salvar uma cópia da biblioteca…", self._save_library_as)
 		file_menu.addSeparator()
 		self._action(file_menu, "Abrir no navegador", lambda: QDesktopServices.openUrl(QUrl(self.server.url)))
 
@@ -152,7 +152,8 @@ class MainWindow(QMainWindow):
 	def _save_library_as(self) -> None:
 		path = self.host.save_file("library", str(self.engine.library_path))
 		if path:
-			self._run(lambda: self.engine.save_library_as(path))
+			# O seletor do Mac já perguntou se pode substituir um arquivo com o mesmo nome.
+			self._run(lambda: self.engine.save_library_as(path, overwrite=True))
 
 	def _run(self, action) -> None:
 		from csvmusic.engine import EngineError

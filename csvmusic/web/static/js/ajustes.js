@@ -359,8 +359,16 @@ async function acaoBiblioteca(qual) {
 			// pasta e a cópia vai com um nome fixo dentro dela.
 			const r = await post("/dialogs/choose-folder", { purpose: "output" });
 			if (!r?.path) return;
-			const s = await post("/library/save-as", { path: `${r.path.replace(/\/$/, "")}/biblioteca-csvmusic.json` });
-			aviso({ tom: "ok", titulo: "Cópia salva", texto: s?.path || "" });
+			// A cópia é só uma cópia: o app continua gravando na biblioteca de sempre.
+			const caminho = `${r.path.replace(/\/$/, "")}/biblioteca-csvmusic.json`;
+			let s;
+			try { s = await post("/library/save-as", { path: caminho }); }
+			catch (e) {
+				if (e.status !== 409 || e.dados?.needs_confirmation !== "overwrite") throw e;
+				if (!await confirmar({ titulo: "Substituir o arquivo?", texto: esc(e.message), sim: "Substituir", nao: "Cancelar" })) return;
+				s = await post("/library/save-as", { path: caminho, overwrite: true });
+			}
+			aviso({ tom: "ok", titulo: "Cópia salva", texto: s?.path ? `${s.path}. O CSVMusic continua usando a biblioteca de sempre.` : "" });
 		}
 	} catch (e) { erro(e); }
 }

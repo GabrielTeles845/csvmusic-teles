@@ -490,6 +490,9 @@ class Handler(BaseHTTPRequestHandler):
 		caminho = urllib.parse.unquote(url.path)
 		q = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query, keep_blank_values=True).items()}
 		try:
+			if metodo != "GET":
+				# Lê o corpo sempre: rota que não usa o corpo deixaria os bytes na conexão reaproveitada.
+				self.corpo()
 			if metodo == "GET" and caminho in ("/", "/index.html"):
 				html = (STATIC / "index.html").read_text(encoding="utf-8").replace("{{CSVMUSIC_TOKEN}}", ARGS.token)
 				self.bytes_(html.encode(), "text/html; charset=utf-8", {"Cache-Control": "no-store",
@@ -676,7 +679,14 @@ class Handler(BaseHTTPRequestHandler):
 			emitir("library", {"path": self.corpo().get("path")})
 			return b.estado()
 		if caminho == "/library/save-as":
-			return {"path": self.corpo().get("path")}
+			# Como no motor: é só uma cópia; arquivo que já existe só com overwrite (a tela pergunta).
+			c = self.corpo()
+			salvas = b.__dict__.setdefault("copias", set())
+			if c.get("path") in salvas and not c.get("overwrite"):
+				raise Erro(409, f"Já existe um arquivo chamado {c['path'].rsplit('/', 1)[-1]} nesta pasta. Quer substituir?",
+					{"needs_confirmation": "overwrite", "path": c.get("path")})
+			salvas.add(c.get("path"))
+			return {"path": c.get("path")}
 		if caminho == "/open":
 			return {"ok": True}
 		if caminho == "/export-csv":

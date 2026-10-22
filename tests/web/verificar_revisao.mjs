@@ -37,6 +37,25 @@ const CENARIOS = {
 		if (stale.status !== 409 || stale.body?.code !== "track_moved") problemas.push(`PATCH com chave velha respondeu ${stale.status}`);
 		return problemas;
 	},
+	// Item 2: salvar uma cópia por cima de um arquivo que existe pergunta antes.
+	async copia(p) {
+		await p.goto(`${BASE}/`);
+		await sleep(1000);
+		await p.keyboard.press("Control+,");
+		await sleep(400);
+		await p.locator('[data-aba="biblioteca"]').click();
+		await sleep(300);
+		const problemas = [];
+		await p.locator('[data-lib="salvar"]').click();
+		await p.locator(".toast", { hasText: "Cópia salva" }).waitFor({ timeout: 3000 });
+		await p.locator(".toast .fechar").first().click();
+		await p.locator('[data-lib="salvar"]').click();
+		const pergunta = p.locator(".dlg", { hasText: "Substituir o arquivo?" });
+		try { await pergunta.waitFor({ timeout: 3000 }); } catch { problemas.push("não perguntou antes de substituir"); return problemas; }
+		await pergunta.locator("[data-sim]").click();
+		try { await p.locator(".toast", { hasText: "Cópia salva" }).waitFor({ timeout: 3000 }); } catch { problemas.push("depois de confirmar, a cópia não foi salva"); }
+		return problemas;
+	},
 };
 
 const pedidos = (process.env.CEN || Object.keys(CENARIOS).join(",")).split(",");

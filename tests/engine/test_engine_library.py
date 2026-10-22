@@ -202,3 +202,28 @@ def test_first_run_flag(make_engine):
 	assert engine.state()["first_run"] is True
 	engine.accept_first_run()
 	assert engine.state()["first_run"] is False
+
+
+def test_save_a_copy_keeps_writing_to_the_original(make_engine, tmp_path):
+	engine = make_engine(3)
+	original = engine.library_path
+	copy = tmp_path / "copia" / "biblioteca-csvmusic.json"
+	copy.parent.mkdir()
+	assert engine.save_library_as(str(copy)) == {"path": str(copy)}
+	assert engine.library_path == original
+	assert engine.events_of("library") == []
+	engine.update_track("spotify:big", 0, {"enabled": False})
+	assert load_library(original)["playlists"][0]["tracks"][0]["enabled"] is False
+	assert load_library(copy)["playlists"][0]["tracks"][0].get("enabled", True) is True
+
+
+def test_save_a_copy_asks_before_replacing_a_file(make_engine, tmp_path):
+	engine = make_engine(2)
+	existing = tmp_path / "outra.json"
+	existing.write_text("{\"meu\": \"arquivo\"}", encoding="utf-8")
+	with pytest.raises(EngineError) as error:
+		engine.save_library_as(str(existing))
+	assert error.value.status == 409 and error.value.extra["needs_confirmation"] == "overwrite"
+	assert existing.read_text(encoding="utf-8") == "{\"meu\": \"arquivo\"}"
+	engine.save_library_as(str(existing), overwrite=True)
+	assert len(load_library(existing)["playlists"]) == 1

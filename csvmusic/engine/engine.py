@@ -419,15 +419,32 @@ class Engine(QObject):
 		self.emit("library", {"path": str(target)})
 		return self.state()
 
-	def save_library_as(self, path: str) -> dict:
-		target = pathlib.Path(str(path or "")).expanduser()
+	def save_library_as(self, path: str, *, overwrite: bool = False) -> dict:
+		"""Grava uma cópia da biblioteca em `path`. O app continua gravando no arquivo de sempre.
+
+		Arquivo que já existe só é substituído com `overwrite=True` (a tela pergunta antes; o seletor
+		nativo do Mac já pergunta sozinho).
+		"""
 		if not str(path or "").strip():
 			raise EngineError(400, "Escolha onde salvar a biblioteca.")
-		self.library_path = target.with_suffix(".json")
-		self.library_load_error = None
-		self.save()
-		self.emit("library", {"path": str(self.library_path)})
-		return {"path": str(self.library_path)}
+		target = pathlib.Path(str(path)).expanduser().with_suffix(".json")
+		if self.library_load_error:
+			raise EngineError(409, "A biblioteca não pôde ser lida; não há o que copiar. Abra outra biblioteca antes.")
+		if target.resolve() == self.library_path.resolve():
+			self.save()
+			return {"path": str(target)}
+		if target.exists() and not overwrite:
+			raise EngineError(
+				409, f"Já existe um arquivo chamado {target.name} nesta pasta. Quer substituir?",
+				needs_confirmation="overwrite", path=str(target),
+			)
+		try:
+			save_library(target, self.library)
+		except OSError as exc:
+			log(f"library copy failed path={target} error={exc}")
+			raise EngineError(500, "Não deu para salvar a cópia nesta pasta.") from exc
+		log(f"library copy saved path={target} playlists={len(self.library.get('playlists', []))} current={self.library_path}")
+		return {"path": str(target)}
 
 	# --- playlists -------------------------------------------------------------------
 
