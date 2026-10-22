@@ -12,6 +12,9 @@ SHORT_TRACK_MAX_SECONDS = 45
 SHORT_TRACK_TOLERANCE_SECONDS = 8
 SEARCH_RETRY_COUNT = 2
 SEARCH_RETRY_SLEEP_S = 0.9
+EXACT_DURATION_BONUS = 0.05
+# Lengths filled in later from another catalog may describe another version.
+_UNRELIABLE_DURATION_SOURCES = {"deezer", "itunes", "musicbrainz", "estimated"}
 
 _PENALTY_TERMS = {"cover","sped","slowed","nightcore","8d","reverb","mashup","karaoke","instrumental","demo","tribute","soundalike"}
 _VERSION_PATTERNS = {
@@ -167,14 +170,57 @@ def _track_duration_s(track: Dict) -> int:
 	except Exception:
 		return 0
 
-def _duration_within_tolerance(track: Dict, cand: Dict) -> bool:
+def _duration_precision_s(track: Dict) -> float:
+	# "m:ss" from a spreadsheet or the Spotify page is only exact to 1 s.
+	try:
+		return max(0.0, float(track.get("duration_precision_s") or 0))
+	except Exception:
+		return 0.0
+
+def _duration_delta_s(track: Dict, cand: Dict) -> Optional[float]:
+	"""Length difference in seconds, minus the requested length's precision."""
 	track_s = _track_duration_s(track)
 	cand_s = _duration_s(cand.get("duration_seconds"))
 	if track_s <= 0 or cand_s <= 0:
+		return None
+	return max(0.0, abs(track_s - cand_s) - _duration_precision_s(track))
+
+def _duration_is_reliable(track: Dict) -> bool:
+	"""True when the length came from the playlist itself (spreadsheet, Spotify...).
+
+	Lengths guessed later from another catalog may belong to another version,
+	so they keep the lenient score table.
+	"""
+	if _track_duration_s(track) <= 0:
+		return False
+	source = str(track.get("duration_source") or "").strip().casefold()
+	return source not in _UNRELIABLE_DURATION_SOURCES
+
+def _duration_score(track: Dict, cand: Dict) -> Tuple[float, float]:
+	"""Return (d_score, exact-length bonus) for a candidate."""
+	delta = _duration_delta_s(track, cand)
+	if delta is None:
+		return 0.7, 0.0  # neutral baseline when no duration available
+	if _duration_is_reliable(track):
+		# A trusted length separates live, extended, radio edit, sped-up and
+		# music-video uploads on its own, so the table is steeper.
+		for limit, value in ((2, 1.0), (6, 0.95), (12, 0.8), (20, 0.6), (30, 0.4)):
+			if delta <= limit:
+				return value, (EXACT_DURATION_BONUS if limit == 2 else 0.0)
+		return 0.2, 0.0
+	for limit, value in ((6, 1.0), (12, 0.9), (20, 0.78), (30, 0.62)):
+		if delta <= limit:
+			return value, 0.0
+	return 0.45, 0.0
+
+def _duration_within_tolerance(track: Dict, cand: Dict) -> bool:
+	track_s = _track_duration_s(track)
+	delta = _duration_delta_s(track, cand)
+	if delta is None:
 		return True
 	if track_s <= SHORT_TRACK_MAX_SECONDS:
-		return abs(track_s - cand_s) <= SHORT_TRACK_TOLERANCE_SECONDS
-	return abs(track_s - cand_s) <= max(1.0, track_s * DURATION_TOLERANCE_RATIO)
+		return delta <= SHORT_TRACK_TOLERANCE_SECONDS
+	return delta <= max(1.0, track_s * DURATION_TOLERANCE_RATIO)
 
 def _score(track: Dict, cand: Dict) -> float:
 	# Score title and artist separately so "tribute to ARTIST" in the title
@@ -195,20 +241,7 @@ def _score(track: Dict, cand: Dict) -> float:
 	# duration (CSV may not have; cand might)
 	sp_s = _track_duration_s(track)
 	yt_s = _duration_s(cand.get("duration_seconds"))
-	if sp_s > 0 and yt_s > 0:
-		delta = abs(sp_s - yt_s)
-		if delta <= 6:
-			d_score = 1.0
-		elif delta <= 12:
-			d_score = 0.9
-		elif delta <= 20:
-			d_score = 0.78
-		elif delta <= 30:
-			d_score = 0.62
-		else:
-			d_score = 0.45
-	else:
-		d_score = 0.7  # neutral baseline when no duration available
+	d_score, exact_length_bonus = _duration_score(track, cand)
 
 	# channel boost
 	channel = _norm_text(cand.get("author") or "")
@@ -247,7 +280,7 @@ def _score(track: Dict, cand: Dict) -> float:
 	if _has_term(titleblob, "tribute") and artist_overlap < 0.5:
 		p_pen += 0.25
 	version_boost = 0.14 if requested_versions and requested_versions == candidate_versions else 0.0
-	total = max(0.0, d_score * 0.35 + title_overlap * 0.35 + artist_overlap * 0.25 + ch_boost + version_boost - p_pen)
+	total = max(0.0, d_score * 0.35 + title_overlap * 0.35 + artist_overlap * 0.25 + ch_boost + version_boost + exact_length_bonus - p_pen)
 	# YouTube Music frequently returns an official translated title for Japanese
 	# and other non-Latin catalog entries. Exact duration, a catalog-song result,
 	# and compatible version markers are stronger evidence than token overlap in

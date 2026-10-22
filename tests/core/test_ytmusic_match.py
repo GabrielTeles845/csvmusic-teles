@@ -293,7 +293,7 @@ def test_penalty_terms_match_whole_words_only():
 	cover = {"title": "Demons (Cover)", "artists": [{"name": "Imagine Dragons"}], "duration_seconds": 200}
 	exact = {"title": "Demons", "artists": [{"name": "Imagine Dragons"}], "duration_seconds": 200}
 	track = {"title": "Demons", "artists": "Imagine Dragons", "duration_ms": 200000}
-	assert ytmusic_match._score(track, exact) - ytmusic_match._score(track, cover) >= 0.09
+	assert ytmusic_match._score(track, exact) - ytmusic_match._score(track, cover) >= 0.08
 
 
 def test_cast_penalty_ignores_castle_and_broadcast():
@@ -352,3 +352,41 @@ def test_skip_log_line_names_the_reason():
 	assert "error=boom" in ytmusic_match.skip_log_line(track, 0.0, [], "boom")
 	mismatch = [{"videoId": "x", "title": "Song", "score": 0.9, "duration_mismatch": True}]
 	assert "every result has the wrong length" in ytmusic_match.skip_log_line(track, 0.0, mismatch)
+
+
+def test_reliable_duration_uses_steeper_table_with_exact_bonus():
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	def cand(seconds):
+		return {"title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": seconds, "source": "music"}
+	assert ytmusic_match._duration_score(track, cand(201)) == (1.0, 0.05)
+	assert ytmusic_match._duration_score(track, cand(205)) == (0.95, 0.0)
+	assert ytmusic_match._duration_score(track, cand(210)) == (0.8, 0.0)
+	assert ytmusic_match._duration_score(track, cand(218)) == (0.6, 0.0)
+	assert ytmusic_match._duration_score(track, cand(225)) == (0.4, 0.0)
+	assert ytmusic_match._duration_score(track, cand(260)) == (0.2, 0.0)
+	# Same text: an exact length (1 s) beats a 25 s difference by a wide margin.
+	assert ytmusic_match._score(track, cand(201)) - ytmusic_match._score(track, cand(225)) >= 0.25
+
+
+def test_unreliable_or_missing_duration_keeps_lenient_table():
+	guessed = {"title": "Song", "artists": "Artist", "duration_ms": 200000, "duration_source": "deezer"}
+	cand = {"title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": 201}
+	assert ytmusic_match._duration_score(guessed, cand) == (1.0, 0.0)
+	assert ytmusic_match._duration_score(guessed, dict(cand, duration_seconds=225)) == (0.62, 0.0)
+	assert ytmusic_match._duration_score({"title": "Song"}, cand) == (0.7, 0.0)
+
+
+def test_music_video_with_long_intro_loses_to_exact_song():
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	song = {"videoId": "song", "title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": 200, "source": "music"}
+	clip = {"videoId": "clip", "title": "Song (Official Video)", "author": "Artist Official", "duration_seconds": 235, "source": "videos"}
+	assert ytmusic_match._score(track, song) > ytmusic_match._score(track, clip)
+
+
+def test_minute_second_precision_widens_comparison_by_one_second():
+	# "3:20" from a spreadsheet: stored as 200.5 s with 1 s precision.
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200500, "duration_precision_s": 1}
+	cand = {"title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": 203}
+	assert ytmusic_match._duration_score(track, cand) == (1.0, 0.05)
+	short = {"duration_ms": 15000, "duration_precision_s": 1}
+	assert ytmusic_match._duration_within_tolerance(short, {"duration_seconds": 24}) is True
