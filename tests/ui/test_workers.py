@@ -234,3 +234,16 @@ def test_bot_check_switches_to_safe_mode_and_retries(monkeypatch, tmp_path):
 	assert profiles == ["normal", YOUTUBE_MITIGATION_AGGRESSIVE.label]
 	assert results[0]["downloaded"] is True
 	assert len(warnings) == 1 and "YouTube asked for bot verification" in warnings[0]
+
+
+def test_skipped_tracks_do_not_wait_between_tracks(monkeypatch, tmp_path):
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.tracks_override += [dict(worker.tracks_override[0], title=f"Song {n}") for n in range(3)]
+	worker.row_indices = [0, 1, 2, 3]
+	sleeps = []
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: _low_confidence_result())
+	monkeypatch.setattr(workers.time, "sleep", sleeps.append)
+	worker.run()
+
+	assert sleeps == []

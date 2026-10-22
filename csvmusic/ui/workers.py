@@ -435,8 +435,8 @@ class PipelineWorker(QThread):
 						)
 						self.sig_warning.emit(search_abort_reason)
 						break
-					if not self._stop and idx < total - 1:
-						time.sleep(self._track_pause_s())
+					# Sem pausa: nada foi baixado. A busca já tem o próprio
+					# intervalo, e a pausa entre faixas existe para os downloads.
 					continue
 
 				payload["match"] = match
