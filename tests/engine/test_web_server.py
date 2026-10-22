@@ -210,3 +210,22 @@ def test_image_host_list():
 		assert not image_url_allowed(url), url
 	assert sniff_image_type(b"\xff\xd8\xff\xe0") == "image/jpeg"
 	assert sniff_image_type(b"<html>") is None
+
+
+def test_stale_track_key_gets_409_over_http(web):
+	app, server, engine = web
+	first = _json(_request(app, server, "GET", "/api/playlists/spotify:big/tracks"))["items"]
+	wrong = first[0]["key"]
+	stale = _request(app, server, "PATCH", "/api/playlists/spotify:big/tracks/1", body={"enabled": False, "key": wrong})
+	assert stale["status"] == 409
+	assert _json(stale) == {"error": "A playlist mudou; abra a música de novo.", "code": "track_moved"}
+	assert engine.library["playlists"][0]["tracks"][1].get("enabled", True) is True
+	for path, body in (
+		("/api/playlists/spotify:big/tracks/1/accept", {"key": wrong}),
+		("/api/playlists/spotify:big/tracks/set-enabled", {"enabled": False, "indices": [1], "keys": [wrong]}),
+		("/api/download", {"targets": [["spotify:big", 1, wrong]]}),
+		("/api/open", {"what": "file", "playlist_id": "spotify:big", "index": 1, "key": wrong}),
+	):
+		assert _request(app, server, "POST", path, body=body)["status"] == 409, path
+	ok = _request(app, server, "PATCH", "/api/playlists/spotify:big/tracks/1", body={"enabled": False, "key": first[1]["key"]})
+	assert ok["status"] == 200 and _json(ok)["key"] == first[1]["key"]

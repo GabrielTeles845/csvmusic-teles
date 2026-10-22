@@ -123,6 +123,8 @@ eventos({
 	},
 	playlists: () => recarregarEstado(),
 	track: (d) => emit("track", d),
+	// Nova análise: a ordem das músicas pode ter mudado e os índices que a tela tem não valem mais.
+	tracks_changed: (d) => emit("tracks_changed", d),
 	job: (j) => { store.job = j || { kind: null }; emit("job"); },
 	scan_done: (d) => {
 		const r = d.results || [];

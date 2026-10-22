@@ -13,7 +13,7 @@ from __future__ import annotations
 import pathlib
 
 from csvmusic.core.audio_quality import audio_quality
-from csvmusic.core.library import FAILURE_AGE_RESTRICTED, library_track_path, playlist_probes
+from csvmusic.core.library import FAILURE_AGE_RESTRICTED, library_track_path, playlist_probes, track_key
 from csvmusic.engine import texts
 
 RUNTIME_STATES = ("queued", "matching", "downloading", "tagging")
@@ -138,6 +138,7 @@ def track_view(
 	quality = texts.quality_pt(audio_quality(file_path)) if exists and with_quality and file_path else None
 	return {
 		"index": index,
+		"key": track_key(track),
 		"position": int(track.get("track_no") or (index + 1)),
 		"title": str(track.get("title") or ""),
 		"artists": str(track.get("artists") or ""),

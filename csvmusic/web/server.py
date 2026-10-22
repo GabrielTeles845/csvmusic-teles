@@ -264,6 +264,11 @@ class WebServer:
 			raise HttpError(400, f"Parâmetro inválido: {name}") from exc
 
 	@staticmethod
+	def _key(value: Any) -> str | None:
+		"""Track.key mandado pela tela (opcional): o motor recusa com 409 se a música mudou de lugar."""
+		return str(value) if value not in (None, "") else None
+
+	@staticmethod
 	def _q(query: dict, name: str, default: str = "") -> str:
 		return str(query.get(name, [default])[0] or default)
 
@@ -301,7 +306,7 @@ class WebServer:
 		targets = body.get("targets")
 		if targets is not None:
 			try:
-				targets = [(str(item[0]), int(item[1])) for item in targets]
+				targets = [(str(item[0]), int(item[1]), str(item[2] or "") if len(item) > 2 else "") for item in targets]
 			except (TypeError, ValueError, IndexError) as exc:
 				raise HttpError(400, "Lista de músicas inválida.") from exc
 		return self.call(
@@ -319,23 +324,29 @@ class WebServer:
 		indices = body.get("indices")
 		if indices is not None and not isinstance(indices, list):
 			raise HttpError(400, "\"indices\" precisa ser uma lista.")
-		return self.call(self.engine.set_tracks_enabled, match["pid"], bool(body.get("enabled")), indices=indices, all_tracks=bool(body.get("all")))
+		keys = body.get("keys")
+		if keys is not None and not isinstance(keys, list):
+			raise HttpError(400, "\"keys\" precisa ser uma lista.")
+		return self.call(
+			self.engine.set_tracks_enabled, match["pid"], bool(body.get("enabled")), indices=indices, all_tracks=bool(body.get("all")),
+			keys=[str(key) for key in keys] if keys is not None else None,
+		)
 
 	def api_accept(self, match, query, body):
-		return self.call(self.engine.accept_review, match["pid"], int(match["index"]))
+		return self.call(self.engine.accept_review, match["pid"], int(match["index"]), self._key(body.get("key")))
 
 	def api_alternatives(self, match, query, body):
-		track = self.call(self.engine.track_snapshot, match["pid"], int(match["index"]))
+		track = self.call(self.engine.track_snapshot, match["pid"], int(match["index"]), self._key(self._q(query, "key")))
 		return self.engine.fetch_alternatives(track)
 
 	def api_video_info(self, match, query, body):
 		track = None
 		if query.get("playlist_id") and query.get("index"):
-			track = self.call(self.engine.track_snapshot, self._q(query, "playlist_id"), self._int(query, "index", 0))
+			track = self.call(self.engine.track_snapshot, self._q(query, "playlist_id"), self._int(query, "index", 0), self._key(self._q(query, "key")))
 		return self.engine.fetch_video_info(self._q(query, "url"), track)
 
 	def api_download_now(self, match, query, body):
-		return self.call(self.engine.download_now, match["pid"], int(match["index"]), str(body.get("video_id") or ""))
+		return self.call(self.engine.download_now, match["pid"], int(match["index"]), str(body.get("video_id") or ""), self._key(body.get("key")))
 
 	def api_settings(self, match, query, body):
 		return self.call(self.engine.settings)
@@ -357,7 +368,7 @@ class WebServer:
 
 	def api_open(self, match, query, body):
 		index = body.get("index")
-		return self.call(self.engine.open_location, str(body.get("what") or ""), body.get("playlist_id"), int(index) if index is not None else None)
+		return self.call(self.engine.open_location, str(body.get("what") or ""), body.get("playlist_id"), int(index) if index is not None else None, self._key(body.get("key")))
 
 	def api_export_csv(self, match, query, body):
 		data, filename = self.call(self.engine.export_csv_bytes, self._q(query, "playlist_id") or None)

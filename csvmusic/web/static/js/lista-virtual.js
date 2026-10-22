@@ -53,6 +53,16 @@ export class ListaVirtual {
 		this.pedir(0);
 	}
 
+	// Relê a lista sem voltar ao topo: as linhas da tela ficam até a página nova chegar.
+	recarregar() {
+		if (this.total === null) { this.iniciar(); return; }
+		this.geracao++;
+		this.paginas.clear();
+		this.posicao.clear();
+		this.erro = null;
+		this.desenhar();
+	}
+
 	agendar() {
 		cancelAnimationFrame(this._quadro);
 		this._quadro = requestAnimationFrame(() => this.desenhar());

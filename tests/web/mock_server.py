@@ -96,7 +96,7 @@ def nova_musica(rng: random.Random, index: int, estado: str, pasta: str) -> dict
 	album_n = rng.randrange(len(ALBUNS))
 	album = ALBUNS[album_n]
 	t = {
-		"index": index, "position": index + 1, "title": titulo, "artists": artistas, "album": album,
+		"index": index, "key": f"mock:{rng.randrange(10 ** 12)}|occurrence:1", "position": index + 1, "title": titulo, "artists": artistas, "album": album,
 		"duration_ms": rng.randrange(140, 330) * 1000 + rng.randrange(0, 999),
 		"cover_url": capa((zlib.crc32(artistas.encode()) + album_n) % 97), "enabled": estado != "disabled",
 		"state": estado, "detail": None, "downloaded_video": None, "preferred_video": None,
@@ -356,6 +356,11 @@ def rodar_analise(ids: list) -> None:
 				if pl["scan_state"] == "never" or not pl["tracks"]:
 					pl["tracks"] = gerar_lista(b.rng, alvo, {"missing": 40, "review": 3, "not_found": 1}, pl["folder"])
 					pl["reported_total"] = alvo
+				else:
+					# Como no motor: a análise trouxe uma música nova no topo e todas as outras mudaram de índice.
+					pl["tracks"].insert(0, nova_musica(b.rng, 0, "missing", pl["folder"]))
+					for novo_indice, musica in enumerate(pl["tracks"]):
+						musica["index"], musica["position"] = novo_indice, novo_indice + 1
 				pl["scan_state"] = "ok"
 				pl["last_scanned_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 				status = "incomplete" if pl["reported_total"] and len(pl["tracks"]) < pl["reported_total"] else "ok"
@@ -363,6 +368,7 @@ def rodar_analise(ids: list) -> None:
 				resultados.append({"playlist_id": pid, "name": pl["name"], "captured": len(pl["tracks"]),
 					"reported_total": pl["reported_total"], "status": status, "message": None,
 					"diff": {"added": 2, "removed": 1, "unchanged": max(0, len(pl["tracks"]) - 2), "kept": 0}})
+				emitir("tracks_changed", {"playlist_id": pid})
 			emitir("playlist", b.resumo(pid))
 	with LOCK:
 		cancelada = b.parar
@@ -453,13 +459,18 @@ class Handler(BaseHTTPRequestHandler):
 
 	# ------------ entrada
 	def corpo(self) -> dict:
+		# Lido uma vez por pedido (a conexão é reaproveitada: rotear() limpa a cópia).
+		if self._corpo is not None:
+			return self._corpo
 		n = int(self.headers.get("Content-Length") or 0)
 		if not n:
-			return {}
+			self._corpo = {}
+			return self._corpo
 		try:
-			return json.loads(self.rfile.read(n) or b"{}")
+			self._corpo = json.loads(self.rfile.read(n) or b"{}")
 		except json.JSONDecodeError:
 			raise Erro(400, "Pedido mal formado.")
+		return self._corpo
 
 	def do_GET(self):
 		self.rotear("GET")
@@ -474,6 +485,7 @@ class Handler(BaseHTTPRequestHandler):
 		self.rotear("DELETE")
 
 	def rotear(self, metodo):
+		self._corpo = None
 		url = urllib.parse.urlsplit(self.path)
 		caminho = urllib.parse.unquote(url.path)
 		q = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query, keep_blank_values=True).items()}
@@ -612,7 +624,13 @@ class Handler(BaseHTTPRequestHandler):
 				raise Erro(409, "Já há uma tarefa rodando. Espere ela terminar ou pare.")
 			c = self.corpo()
 			if "targets" in c:
-				alvos = [(p, int(i)) for p, i in c["targets"] if p in b.playlists]
+				alvos = []
+				for p, i, *k in c["targets"]:
+					if p not in b.playlists:
+						continue
+					if k and k[0] and b.playlists[p]["tracks"][int(i)]["key"] != k[0]:
+						raise Erro(409, "A playlist mudou; abra a música de novo.", {"code": "track_moved"})
+					alvos.append((p, int(i)))
 			else:
 				alvos = [(p, t["index"]) for p in c.get("playlist_ids", []) if p in b.playlists
 					for t in b.playlists[p]["tracks"] if t["enabled"] and (not t["file_path"] or t["state"] == "redownload")]
@@ -782,6 +800,9 @@ class Handler(BaseHTTPRequestHandler):
 			emitir("playlist", b.resumo(pid))
 			return {"changed": mudou}
 		pl, t = self.musica(pid, partes[3])
+		chave = q.get("key") if metodo == "GET" else self.corpo().get("key")
+		if chave and chave != t["key"]:
+			raise Erro(409, "A playlist mudou; abra a música de novo.", {"code": "track_moved"})
 		if len(partes) == 4 and metodo == "PATCH":
 			c = self.corpo()
 			if "enabled" in c:
