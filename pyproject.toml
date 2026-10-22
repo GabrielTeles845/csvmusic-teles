@@ -23,7 +23,7 @@ csvmusic = "csvmusic.app:main"
 [tool.setuptools]
 package-dir = {"" = "."}
 include-package-data = true
-packages = ["csvmusic", "csvmusic.core", "csvmusic.ui"]
+packages = ["csvmusic", "csvmusic.core", "csvmusic.ui", "csvmusic.tools"]
 
 [tool.setuptools.package-data]
 csvmusic = [

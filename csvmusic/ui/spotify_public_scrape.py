@@ -6,6 +6,12 @@ import secrets
 from typing import Any
 from urllib.parse import urlparse
 
+from csvmusic.core.webengine_env import configure_webengine_background_flags
+
+# Also covers the entry points that skip app.py; Chromium reads the flags when the
+# first browser profile is created, which happens after this import.
+configure_webengine_background_flags()
+
 from PySide6.QtCore import QThread, QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -14,6 +20,7 @@ from PySide6.QtWidgets import (
 	QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
+from csvmusic.core.durations import parse_duration
 from csvmusic.core.spotify_import import SpotifyImportError, SpotifyPlaylistPrivateError, fetch_spotify_playlist, parse_spotify_source
 from csvmusic.core.log import log
 
@@ -52,6 +59,9 @@ _CAPTURE_SCRIPT = r"""
 		const positionCell = row.querySelector('[aria-colindex="1"]');
 		const positionText = (positionCell?.innerText || '').trim();
 		const position = /^\d{1,5}$/.test(positionText) ? parseInt(positionText, 10) : null;
+		// The duration column shows "m:ss" (or "h:mm:ss"); it is the last clock-like text in the row.
+		const clockLines = lines.filter(x => /^\d{1,2}(?::\d{2}){1,2}$/.test(x));
+		const duration = clockLines.length ? clockLines[clockLines.length - 1] : '';
 		tracks.push({
 			id: match[1],
 			position,
@@ -59,6 +69,7 @@ _CAPTURE_SCRIPT = r"""
 			artists: artistLinks.map(x => (x.innerText || x.textContent || '').trim()).filter(Boolean),
 			album: albumLink ? (albumLink.innerText || albumLink.textContent || '').trim() : '',
 			cover_url: artwork ? (artwork.currentSrc || artwork.src || '') : '',
+			duration,
 			text: lines,
 		});
 	}
@@ -145,7 +156,7 @@ def normalized_capture(item: Any) -> dict | None:
 	artist_text = ", ".join(str(value).strip() for value in artists if str(value).strip())
 	if not track_id or not title:
 		return None
-	return {
+	track = {
 		"id": track_id,
 		"position": _safe_position(item.get("position")),
 		"title": title,
@@ -153,6 +164,22 @@ def normalized_capture(item: Any) -> dict | None:
 		"album": str(item.get("album") or "").strip(),
 		"cover_url": str(item.get("cover_url") or "").strip() or None,
 	}
+	duration_text = str(item.get("duration") or "").strip()
+	if ":" in duration_text:
+		duration_ms, precision = parse_duration(duration_text)
+		if duration_ms > 0:
+			track.update({"duration_ms": duration_ms, "duration_source": "spotify", "duration_precision_s": precision})
+	return track
+
+
+def merge_captured_duration(existing: dict, captured: dict) -> None:
+	"""Fill a known row's duration from the page; an exact embed value (ms) is never replaced by "m:ss"."""
+	if not captured.get("duration_ms"):
+		return
+	if int(existing.get("duration_ms") or 0) > 0:
+		return
+	for field in ("duration_ms", "duration_source", "duration_precision_s"):
+		existing[field] = captured.get(field)
 
 
 def _safe_position(value: Any) -> int | None:
@@ -197,6 +224,22 @@ def recover_single_missing_position(captured: list[dict], existing: dict[str, di
 		recovered = next(iter(unique.values()))
 		recovered["position"] = missing[0]
 	return captured
+
+
+def baseline_row(track: dict, track_id: str, position: int) -> dict:
+	"""Phase 1 (embed/page JSON) row; keeps the exact duration in ms that the embed provides."""
+	row = {
+		"id": track_id,
+		"position": position,
+		"title": track.get("title") or "",
+		"artists": track.get("artists") or "",
+		"album": track.get("album") or "",
+		"cover_url": track.get("cover_url"),
+	}
+	duration_ms = int(track.get("duration_ms") or 0)
+	if duration_ms > 0:
+		row.update({"duration_ms": duration_ms, "duration_source": "spotify", "duration_precision_s": 0})
+	return row
 
 
 def metadata_gap_positions(tracks: list[dict], playlist_cover_url: str | None, reported_total: int | None = None) -> list[int]:
@@ -361,14 +404,7 @@ class SpotifyPublicScrapeDialog(QDialog):
 			track_id = str(track.get("sp_id") or "").strip()
 			if track_id:
 				position = int(track.get("track_no") or playlist_position)
-				self.tracks[f"{position}:{track_id}"] = {
-					"id": track_id,
-					"position": position,
-					"title": track.get("title") or "",
-					"artists": track.get("artists") or "",
-					"album": track.get("album") or "",
-					"cover_url": track.get("cover_url"),
-				}
+				self.tracks[f"{position}:{track_id}"] = baseline_row(track, track_id, position)
 		self.baseline_count = len(self.tracks)
 		self.playlist_name = getattr(playlist, "name", "Spotify Playlist")
 		self.playlist_cover_url = getattr(playlist, "cover_url", None)
@@ -462,6 +498,7 @@ class SpotifyPublicScrapeDialog(QDialog):
 				for field in ("title", "artists", "album", "cover_url"):
 					if track.get(field):
 						existing[field] = track[field]
+				merge_captured_duration(existing, track)
 		added = len(self.tracks) - before
 		new_ids = list(self.tracks.keys())[before:]
 		if self.capture_requested_scroll:
@@ -565,7 +602,8 @@ class SpotifyPublicScrapeDialog(QDialog):
 			log(
 				f"spotify_public_scrape session={self.session_id} event=finish playlist_id={self.playlist_id} "
 				f"captured={len(self.tracks)} baseline={self.baseline_count} reported_total={self.reported_total} "
-				f"missing={missing} passes={self.iteration} waits={self.stalled} reason={message!r}"
+				f"missing={missing} with_duration={sum(1 for track in emitted_tracks if track.get('duration_ms'))} "
+				f"passes={self.iteration} waits={self.stalled} reason={message!r}"
 			)
 			if not self.finish_emitted:
 				self.finish_emitted = True

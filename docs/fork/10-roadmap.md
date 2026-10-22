@@ -77,9 +77,9 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 
 ### Importação (doc 05)
 - [ ] 1.21 `scan_cancelled=True` ao fechar + junção segura (análise parcial não apaga faixas) (`05 §4.4 passo 9`)
-- [ ] 1.22 Capturar a **duração** (`mm:ss`) no leitor do Spotify (`05 §5 item 12`)
-- [ ] 1.23 CSV robusto: separador `;`, acentos, colunas em pt/es (Faixa, Artista, Álbum, Duração, Link) (`05 §3.6`) — **resolve o erro do `musicas_curtidas_spotify.csv`**
-- [ ] 1.24 Flags anti-throttling do Chromium (`05 §4.4 passo 11`)
+- [x] 1.22 Capturar a **duração** (`mm:ss`) no leitor do Spotify (`05 §5 item 12`). A linha da página dá `m:ss` (precisão 1 s); a duração em ms do embed (posições 1–100) é mantida e não é trocada pelo `m:ss` (22/10/2026)
+- [x] 1.23 CSV robusto: separador `;`, acentos, colunas em pt/es (Faixa, Artista, Álbum, Duração, Link) (`05 §3.6`) — **resolve o erro do `musicas_curtidas_spotify.csv`**: as 1.124 linhas importam, com álbum e ID do Spotify tirado do `Link` (22/10/2026)
+- [x] 1.24 Flags anti-throttling do Chromium (`05 §4.4 passo 11`), em `core/webengine_env.py`, aplicadas no `app.py` e ao importar o leitor do Spotify (22/10/2026)
 - [x] 1.31 Playlist particular: 404 do Spotify vira `SpotifyPlaylistPrivateError` com instrução para tornar pública; antes a análise terminava sem aviso nenhum. Lista mostra "PRIVATE ON SPOTIFY" e o resumo conta as privadas (22/10/2026)
 
 ### Geral
@@ -87,8 +87,8 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 - [ ] 1.26 Log com rotação no lugar certo do Mac (`~/Library/Logs/CSVMusicTeles`) (`03 §6`)
 
 ### Duração da música (doc 13) — garantir que é a música certa
-- [ ] 1.27 CSV lê `Duração`/`Duration (ms)` em `m:ss`, `h:mm:ss`, segundos ou ms; guarda `duration_source` e precisão (`13 §4.1`) — fazer junto com 1.23
-- [ ] 1.28 Comando `fill_durations`: preenche a biblioteca atual a partir da planilha pelo ID do Spotify, com backup (`13 §5.1`) — **resolve as 1.124 músicas sem duração**
+- [x] 1.27 CSV lê `Duração`/`Duration (ms)` em `m:ss`, `h:mm:ss`, segundos ou ms; guarda `duration_source` e precisão (`13 §4.1`). Leitura em `core/durations.py`. Falta a biblioteca guardar `duration_source`/`duration_precision_s` (hoje `_normalized_track` descarta) (22/10/2026)
+- [x] 1.28 Comando `fill_durations`: preenche a biblioteca atual a partir da planilha pelo ID do Spotify, com backup (`13 §5.1`) — **resolve as 1.124 músicas sem duração**. `python -m csvmusic.tools.fill_durations --csv <planilha> [--library <library.json>] [--dry-run]`; recusa com o app aberto (22/10/2026)
 - [ ] 1.29 Nota mais rígida quando a duração é confiável + fora da tolerância vira `duration_mismatch`, não "busca vazia" (`13 §4.2-4.3`)
 - [ ] 1.30 Conferir a duração do arquivo depois de baixar e rejeitar se não bater (`13 §4.4`)
 - [ ] Depois (fase 4/7): enriquecimento automático por embed/Deezer/iTunes, coluna "Duração" na tela, exportar CSV com duração (`13 §5.2-5.3, §4.6`)

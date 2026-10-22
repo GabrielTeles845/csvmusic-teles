@@ -34,6 +34,8 @@ def configure_qt_logging(environment: dict[str, str] | None = None) -> None:
 # Spotify scanner is the only interface that needs Chromium rendering.
 configure_linux_webengine_environment()
 configure_qt_logging()
+from csvmusic.core.webengine_env import configure_webengine_background_flags
+configure_webengine_background_flags()
 
 # --- Hard block tkinter imports everywhere (some libs import it implicitly) ---
 _orig_import = builtins.__import__
