@@ -9,7 +9,8 @@ let estado = { aparelhos: null, ocupado: false, sel: null, noAparelho: null, mar
 
 export function abrirAparelhos() {
 	if (d && !d.fechado) return;
-	estado = { aparelhos: null, ocupado: false, sel: null, noAparelho: null, biblioteca: null, marcadas: new Set(), progresso: null, erro: null };
+	// pedindo: tirar, ejetar ou mandar em andamento; os botões do aparelho ficam desligados até a resposta.
+	estado = { aparelhos: null, ocupado: false, sel: null, noAparelho: null, biblioteca: null, marcadas: new Set(), progresso: null, erro: null, pedindo: false };
 	d = dialogo({
 		titulo: "Aparelhos",
 		corpo: `<div data-ap></div>`,
@@ -59,8 +60,9 @@ function pintar() {
 	const ap = estado.aparelhos;
 	const sync = d.pe.querySelector('[data-a="sync"]');
 	const ej = d.pe.querySelector('[data-a="ejetar"]');
-	sync.disabled = !estado.sel || estado.ocupado || !estado.marcadas.size || !!estado.progresso;
-	ej.disabled = !estado.sel || estado.ocupado || !!estado.progresso;
+	const livre = () => !!estado.sel && !estado.ocupado && !estado.progresso && !estado.pedindo;
+	sync.disabled = !livre() || !estado.marcadas.size;
+	ej.disabled = !livre();
 	if (estado.erro) {
 		box.innerHTML = `<div class="lista-msg" style="padding:12px 0"><h2>Não deu para procurar aparelhos</h2><p>${esc(estado.erro.message)}</p><button class="btn" data-a="procurar">${icon("refresh-cw")}Tentar de novo</button></div>`;
 		return;
@@ -90,7 +92,7 @@ function pintar() {
 		else if (no.erro) html += `<div><span class="cresce erro-campo">${esc(no.erro)}</span></div>`;
 		else if (!no.length) html += `<div>${icon("list-music")}<span class="cresce"><b>Nenhuma playlist ainda</b><small>Escolha abaixo o que mandar.</small></span></div>`;
 		else html += no.map((p) => `<div>${icon("list-music")}<span class="cresce"><b>${esc(p.name)}</b><small>${n(p.track_count)} músicas</small></span>
-			<button class="btn sm" data-a="tirar" data-nome="${esc(p.name)}" ${estado.ocupado || estado.progresso ? "disabled" : ""}>Tirar</button></div>`).join("");
+			<button class="btn sm" data-a="tirar" data-nome="${esc(p.name)}" ${livre() ? "" : "disabled"}>Tirar</button></div>`).join("");
 		html += `</div><span class="rot">Mandar do CSVMusic</span><div class="lista-simples" style="margin-top:6px">`;
 		const bib = estado.biblioteca;
 		if (!bib) html += [0, 1, 2].map((i) => `<div aria-hidden="true">${sh("18px", "sh-blk")}<span class="cresce"><b>${sh(["9em", "7em", "10em"][i])}</b><small>${sh("12em")}</small></span></div>`).join("");
@@ -102,8 +104,17 @@ function pintar() {
 	box.innerHTML = html;
 	box.querySelectorAll("[data-pl]").forEach((c) => c.addEventListener("change", () => {
 		if (c.checked) estado.marcadas.add(c.dataset.pl); else estado.marcadas.delete(c.dataset.pl);
-		sync.disabled = !estado.sel || estado.ocupado || !estado.marcadas.size;
+		sync.disabled = !livre() || !estado.marcadas.size;
 	}));
+}
+
+// Um pedido ao aparelho por vez: desliga os botões até a resposta (o motor também recusa com 409).
+async function pedirAoAparelho(fn) {
+	if (estado.pedindo) return;
+	estado.pedindo = true;
+	pintar();
+	try { await fn(); }
+	finally { estado.pedindo = false; pintar(); }
 }
 
 async function aoClicar(ev) {
@@ -113,21 +124,28 @@ async function aoClicar(ev) {
 	if (a === "procurar") procurar();
 	if (a === "aparelho") escolher(b.dataset.id);
 	if (a === "sync") {
-		try {
-			await post(`/devices/${enc(estado.sel)}/sync`, { playlist_ids: [...estado.marcadas] });
-			estado.progresso = { done: 0, total: 0, message: "Começando" };
-			pintar();
-		} catch (e) { erro(e, "Não deu para mandar"); }
+		await pedirAoAparelho(async () => {
+			try {
+				await post(`/devices/${enc(estado.sel)}/sync`, { playlist_ids: [...estado.marcadas] });
+				estado.progresso = { done: 0, total: 0, message: "Começando" };
+			} catch (e) { erro(e, "Não deu para mandar"); }
+		});
 	}
 	if (a === "tirar") {
 		const nome = b.dataset.nome;
 		if (!await confirmar({ titulo: "Tirar do aparelho", texto: `“${esc(nome)}” sai do aparelho. As músicas continuam no Mac.`, sim: "Tirar" })) return;
-		try { await del(`/devices/${enc(estado.sel)}/playlists/${enc(nome)}`); escolher(estado.sel); }
-		catch (e) { erro(e, "Não deu para tirar"); }
+		let tirou = false;
+		await pedirAoAparelho(async () => {
+			try { await del(`/devices/${enc(estado.sel)}/playlists/${enc(nome)}`); tirou = true; }
+			catch (e) { erro(e, "Não deu para tirar"); }
+		});
+		if (tirou && d) escolher(estado.sel);
 	}
 	if (a === "ejetar") {
-		try { await post(`/devices/${enc(estado.sel)}/eject`); }
-		catch (e) { erro(e, "Não deu para ejetar"); }
+		await pedirAoAparelho(async () => {
+			try { await post(`/devices/${enc(estado.sel)}/eject`); }
+			catch (e) { erro(e, "Não deu para ejetar"); }
+		});
 	}
 }
 

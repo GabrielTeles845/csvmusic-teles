@@ -949,8 +949,10 @@ class Handler(BaseHTTPRequestHandler):
 			iniciar(copiar)
 			return {"started": True}
 		if len(partes) == 4 and metodo == "DELETE":
+			time.sleep(1.2)  # o aparelho de verdade demora; a tela tem de desligar os botões enquanto isso
 			return {"removed": True}
 		if len(partes) == 3 and partes[2] == "eject":
+			time.sleep(1.2)
 			depois(.5, lambda: emitir("device", {"phase": "ejected", "done": 0, "total": 0, "message": "Pode desconectar o aparelho."}))
 			return {"ok": True}
 		raise Erro(404, "Rota não encontrada.")

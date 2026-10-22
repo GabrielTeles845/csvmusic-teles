@@ -181,6 +181,9 @@ class Engine(QObject):
 		# Aparelhos.
 		self._devices: dict[str, Any] = {}
 		self._device_lock = threading.Lock()
+		# Uma tarefa por vez no aparelho (sincronizar, remover playlist, ejetar): duas mexendo no
+		# iTunesDB ao mesmo tempo estragam o banco. Remover e ejetar rodam na thread do servidor.
+		self._device_task_lock = threading.Lock()
 		self.device_worker = None
 		self.device_busy = False
 		# Registro da sessão.
@@ -1761,15 +1764,28 @@ class Engine(QObject):
 			result.append({"playlist_id": _key_of(playlist), "name": views.playlist_name(playlist), "state": state.lower(), "ready": ready})
 		return result
 
+	def _claim_device(self) -> None:
+		with self._device_task_lock:
+			if self.device_busy:
+				raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
+			self.device_busy = True
+
+	def _release_device(self) -> None:
+		with self._device_task_lock:
+			self.device_busy = False
+
 	def start_device_sync(self, device_id: str, playlist_ids: list[str]) -> dict:
 		device = self._device(device_id)
-		if self.device_busy:
-			raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
 		keys = {_key_of(playlist) for playlist in (playlist_by_id(self.library, key) for key in playlist_ids or []) if playlist}
 		if not keys:
 			raise EngineError(400, "Escolha pelo menos uma playlist para levar ao aparelho.")
-		self.device_busy = True
-		worker = self.device_sync_worker_factory(device, self.library, keys, self)
+		self._claim_device()
+		try:
+			# O worker copia (fundo) as playlists escolhidas: a thread dele não lê dicionários que a thread do Qt muda.
+			worker = self.device_sync_worker_factory(device, self.library, keys, self)
+		except Exception:
+			self._release_device()
+			raise
 		self.device_worker = worker
 		worker.progress.connect(lambda done, total, message: self.emit("device", {"phase": "sync", "done": int(done), "total": int(total), "message": str(message)}))
 		worker.completed.connect(lambda result, chosen=device: self._device_sync_completed(chosen, result))
@@ -1800,32 +1816,37 @@ class Engine(QObject):
 	def _device_worker_finished(self) -> None:
 		worker = self.device_worker
 		self.device_worker = None
-		self.device_busy = False
+		self._release_device()
 		if worker is not None:
 			worker.deleteLater()
 
 	def delete_device_playlist(self, device_id: str, name: str) -> dict:
 		from csvmusic.core.device_sync import delete_device_playlist
 		device = self._device(device_id)
-		if self.device_busy:
-			raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
+		self._claim_device()
 		try:
 			delete_device_playlist(device, name)
 		except Exception as exc:
 			log(f"device playlist delete failed device={device.root} name={name!r} error={exc}")
 			raise EngineError(500, "Não deu para remover a playlist do aparelho.") from exc
+		finally:
+			self._release_device()
 		return {"removed": True}
 
 	def eject_device(self, device_id: str, *, _from_worker: bool = False) -> dict:
 		from csvmusic.core.device_sync import eject_device
 		device = self._device(device_id)
-		if self.device_busy and not _from_worker:
-			raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
+		# Vindo do fim da sincronização, o aparelho ainda está ocupado por ela (e só ela mexe nele).
+		if not _from_worker:
+			self._claim_device()
 		try:
 			eject_device(device)
 		except Exception as exc:
 			log(f"device eject failed device={device.root} error={exc}")
 			raise EngineError(500, "Não deu para ejetar o aparelho.") from exc
+		finally:
+			if not _from_worker:
+				self._release_device()
 		self.emit("device", {"phase": "ejected", "done": 0, "total": 0, "message": f"{device.name} pode ser desconectado."})
 		return {"ok": True}
 

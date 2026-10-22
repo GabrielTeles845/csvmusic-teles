@@ -6,6 +6,7 @@ Vieram de `ui/library_mode.py` (análise direta, fila do download) e de
 """
 from __future__ import annotations
 
+import copy
 import pathlib
 
 from PySide6.QtCore import QThread, Signal
@@ -132,9 +133,11 @@ class DeviceSyncWorker(QThread):
 	def __init__(self, device: PortableDevice, library: dict, playlist_keys: set[str], parent=None):
 		super().__init__(parent)
 		self.device = device
-		self.library = dict(library)
+		# Cópia profunda, feita aqui na thread do Qt: durante a cópia para o aparelho a tela continua
+		# mudando a biblioteca, e a thread do worker não pode ler esses dicionários pela metade.
+		self.library = {key: copy.deepcopy(value) for key, value in library.items() if key != "playlists"}
 		self.library["playlists"] = [
-			playlist for playlist in library.get("playlists", [])
+			copy.deepcopy(playlist) for playlist in library.get("playlists", [])
 			if f"{playlist.get('platform') or 'spotify'}:{playlist.get('id')}" in playlist_keys
 		]
 

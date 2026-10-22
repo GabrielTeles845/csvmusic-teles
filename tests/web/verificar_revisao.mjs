@@ -69,6 +69,23 @@ const CENARIOS = {
 		if (total !== depois.length) problemas.push(`a lista tem altura de ${total} linhas, o filtro tem ${depois.length}`);
 		return problemas;
 	},
+	// Item 6: enquanto o pedido de tirar playlist roda, ejetar, mandar e os outros "Tirar" ficam desligados.
+	async aparelhos(p) {
+		await p.goto(`${BASE}/`);
+		await sleep(1000);
+		await p.locator('.side [data-l="aparelhos"]').click();
+		await p.locator('[data-a="tirar"]').first().waitFor({ timeout: 5000 });
+		await p.locator('[data-a="tirar"]').first().click();
+		await p.locator(".dlg", { hasText: "Tirar do aparelho" }).locator("[data-sim]").click();
+		await sleep(250);
+		const problemas = [];
+		const ligados = await p.evaluate(() => [...document.querySelectorAll('[data-a="ejetar"], [data-a="sync"], [data-a="tirar"]')]
+			.filter((b) => !b.disabled).map((b) => b.dataset.a));
+		if (ligados.length) problemas.push(`botões ligados durante o pedido: ${ligados.join(", ")}`);
+		await sleep(1800);
+		if (await p.locator('[data-a="ejetar"]').isDisabled()) problemas.push("ejetar continuou desligado depois da resposta");
+		return problemas;
+	},
 	// Item 2: salvar uma cópia por cima de um arquivo que existe pergunta antes.
 	async copia(p) {
 		await p.goto(`${BASE}/`);
