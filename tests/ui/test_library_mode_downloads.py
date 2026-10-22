@@ -161,6 +161,51 @@ def test_unreadable_library_is_copied_and_never_overwritten(monkeypatch, tmp_pat
 		QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
+def _mark_private(dialog) -> None:
+	from csvmusic.core.library import mark_playlist_access_error
+	mark_playlist_access_error(dialog.library, "spotify:big", "private", "Playlist is private.")
+	dialog._save()
+
+
+def test_private_mark_clears_when_playlist_comes_back_public_but_empty(library_dialog, monkeypatch):
+	dialog, path, output = library_dialog
+	monkeypatch.setattr(dialog, "_scan_next", lambda: None)
+	_mark_private(dialog)
+
+	dialog._scan_finished({"id": "big", "name": "Big", "tracks": [], "reported_total": 0, "complete": True, "message": "ok"})
+
+	saved = load_library(path)["playlists"][0]
+	assert saved["access_error"] is None
+	assert len(saved["tracks"]) == 30
+
+
+def test_network_failure_neither_creates_nor_clears_private_mark(library_dialog, monkeypatch):
+	dialog, path, output = library_dialog
+	monkeypatch.setattr(dialog, "_scan_next", lambda: None)
+	failure = {"id": "big", "tracks": [], "error": "Phase 1 failed: timed out", "error_kind": "error", "complete": False}
+
+	dialog._scan_finished(dict(failure))
+	assert not load_library(path)["playlists"][0].get("access_error")
+
+	_mark_private(dialog)
+	dialog._scan_finished(dict(failure))
+	assert load_library(path)["playlists"][0]["access_error"] == "private"
+
+
+def test_private_playlist_row_keeps_the_errors_button(library_dialog):
+	from PySide6.QtWidgets import QLabel, QPushButton
+	dialog, path, output = library_dialog
+	dialog.library["playlists"][0]["tracks"][0]["last_error"] = "boom"
+	_mark_private(dialog)
+	dialog._refresh()
+
+	card = dialog.playlist_tree.itemWidget(dialog.playlist_items["spotify:big"], 0)
+	buttons = [button.text() for button in card.findChildren(QPushButton)]
+	labels = [label.text() for label in card.findChildren(QLabel)]
+	assert "1 errors" in buttons
+	assert any(text.startswith("PRIVATE ON SPOTIFY") for text in labels)
+
+
 class _RunningScraper:
 	"""Stands in for the Spotify reader: _finish reports the partial result synchronously, like the real one."""
 

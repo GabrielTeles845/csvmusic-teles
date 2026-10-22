@@ -91,6 +91,17 @@ def test_library_of_another_version_raises_clear_error_and_backup_keeps_original
 	assert backup_library_file(path) != backup
 
 
+def test_clear_access_error_reports_whether_anything_changed():
+	from csvmusic.core.library import clear_playlist_access_error, mark_playlist_access_error
+	library = _library_with_playlist()
+	assert clear_playlist_access_error(library, PLAYLIST_ID) is False
+	mark_playlist_access_error(library, PLAYLIST_ID, "private", "Playlist is private.")
+
+	assert clear_playlist_access_error(library, PLAYLIST_ID) is True
+	assert library["playlists"][0]["access_error"] is None
+	assert library["playlists"][0]["access_error_message"] is None
+
+
 def _songs(*ids: str) -> list[dict]:
 	return [{"id": song_id, "title": f"Song {song_id}", "artists": "Artist"} for song_id in ids]
 

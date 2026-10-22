@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from csvmusic.core.library import (
-	add_playlist_urls, adjust_status_counts, apply_library_download_result, backup_library_file, describe_skip, edit_library_track, enabled_tracks, export_csv,
+	add_playlist_urls, adjust_status_counts, apply_library_download_result, backup_library_file, clear_playlist_access_error,
+	describe_skip, edit_library_track, enabled_tracks, export_csv,
 	find_library_track, library_status, library_track_path, load_library,
 	import_csv_playlist, mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id,
 	rename_library_playlist, save_library, track_status_counts, write_library_m3us,
@@ -2494,6 +2495,12 @@ class LibraryModeDialog(QDialog):
 				if mark_playlist_access_error(self.library, playlist_id, "private", str(data["error"])):
 					self._save()
 				log(f"library playlist scan private id={playlist_id}")
+		elif not self.scan_cancelled and playlist_id:
+			# The source answered: the playlist is reachable again, even when it is now empty.
+			access_id = f"{data.get('platform')}:{playlist_id}" if data.get("platform") else playlist_id
+			if clear_playlist_access_error(self.library, access_id):
+				self._save()
+				log(f"library playlist access restored id={playlist_id} tracks={len(data.get('tracks') or [])}")
 		if not self.scan_cancelled and playlist_id and data.get("tracks"):
 			message = str(data.get("message") or "")
 			warning = None if data.get("complete") else message
@@ -2769,7 +2776,11 @@ class LibraryModeDialog(QDialog):
 		unscanned = not bool(playlist.get("last_scanned_at"))
 		is_private = playlist.get("access_error") == "private"
 		incomplete_scan = bool(playlist.get("scan_warning")) or bool(total and track_count < total)
-		item.setSizeHint(0, QSize(0, 78 if unscanned or is_private or incomplete_scan or redownload_count else 68))
+		row_height = 78 if unscanned or is_private or incomplete_scan or redownload_count else 68
+		if is_private and error_count:
+			# The private notice (two lines) and the errors button are stacked.
+			row_height = 88
+		item.setSizeHint(0, QSize(0, row_height))
 		if unscanned or is_private:
 			row_color = QColor("#e08080")
 		elif incomplete_scan:
@@ -2833,8 +2844,8 @@ class LibraryModeDialog(QDialog):
 		if error_label:
 			status_labels.append(error_label)
 		if is_private:
-			# Counts from an older scan would only crowd out the one thing to fix.
-			status_labels = [private_label]
+			# Old counts would crowd out the one thing to fix, but saved download errors stay reachable.
+			status_labels = [private_label] + ([error_label] if error_label else [])
 		for status_label in status_labels:
 			_configure_playlist_status_widget(status_label, unscanned=unscanned or is_private)
 		for status_label in status_labels:
@@ -2843,6 +2854,11 @@ class LibraryModeDialog(QDialog):
 			error_label.setToolTip("View playlist download errors")
 			error_label.setFixedHeight(28)
 			error_label.clicked.connect(lambda _checked=False, source=playlist: self._show_playlist_errors(source))
+		if is_private and error_label:
+			# Stacked pieces share one width so their edges line up.
+			shared_width = max(private_label.sizeHint().width(), error_label.sizeHint().width(), private_label.minimumWidth())
+			private_label.setFixedWidth(shared_width)
+			error_label.setFixedWidth(shared_width)
 		card_layout.addLayout(status_layout)
 		playlist_status = QLabel()
 		playlist_status.setFixedSize(26, 26)

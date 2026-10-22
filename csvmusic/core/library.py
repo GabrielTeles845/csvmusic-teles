@@ -397,6 +397,21 @@ def mark_playlist_access_error(library: dict, playlist_id: str, kind: str, messa
 	return playlist
 
 
+def clear_playlist_access_error(library: dict, playlist_id: str) -> bool:
+	"""Drop an access mark after a scan that reached the playlist, even if it came back empty.
+
+	Returns True when something changed. A failed scan (network, timeout) must not call this:
+	it says nothing about whether the playlist is private.
+	"""
+	playlist = playlist_by_id(library, playlist_id)
+	if playlist is None or not (playlist.get("access_error") or playlist.get("access_error_message")):
+		return False
+	playlist["access_error"] = None
+	playlist["access_error_message"] = None
+	playlist["access_error_at"] = None
+	return True
+
+
 def _update_m3u_playlist_name(path: pathlib.Path, playlist_name: str) -> None:
 	raw = path.read_bytes()
 	has_bom = raw.startswith(b"\xef\xbb\xbf")
