@@ -288,6 +288,12 @@ def merge_playlist_scan(
 		if old.get("custom_album"):
 			track["album"] = old.get("album") or ""
 			track["custom_album"] = True
+		if not track.get("duration_ms") and old.get("duration_ms"):
+			# A scan without durations (e.g. the browser reader) must not erase one read before (doc 13).
+			track["duration_ms"] = int(old["duration_ms"])
+			for field in ("duration_source", "duration_precision_s"):
+				if old.get(field) not in (None, ""):
+					track[field] = old[field]
 		track["enabled"] = bool(old.get("enabled", True))
 		track["preferred_video_id"] = old.get("preferred_video_id") or track.get("preferred_video_id") or None
 		track["preferred_video_label"] = old.get("preferred_video_label") or track.get("preferred_video_label") or None
@@ -587,6 +593,10 @@ def _normalized_track(raw: dict[str, Any], playlist_name: str, position: int) ->
 		track["youtube_video_author"] = raw.get("youtube_video_author") or track["artists"]
 	if raw.get("apple_music_id"):
 		track["apple_music_id"] = raw["apple_music_id"]
+	if raw.get("duration_source"):
+		track["duration_source"] = str(raw["duration_source"])
+	if raw.get("duration_precision_s") not in (None, ""):
+		track["duration_precision_s"] = raw["duration_precision_s"]
 	return track
 
 
