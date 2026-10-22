@@ -74,6 +74,53 @@ def test_older_cross_platform_folder_is_copied_when_nothing_newer_exists(monkeyp
 	assert (legacy / "library.json").exists()
 
 
+def test_first_run_copies_the_youtube_login_and_points_the_cookies_at_the_copy(monkeypatch, tmp_path: pathlib.Path) -> None:
+	import json
+
+	original = tmp_path / "Library" / "Application Support" / "CSVMusic"
+	login = original / "youtube-login"
+	(login / "firefox").mkdir(parents=True)
+	(login / "youtube-cookies.txt").write_text("# Netscape HTTP Cookie File\nlogin", encoding="utf-8")
+	(login / "popup-cookies.txt").write_text("# Netscape HTTP Cookie File\npopup", encoding="utf-8")
+	(login / "firefox" / "cookies.sqlite").write_bytes(b"db")
+	(login / "firefox" / ".parentlock").write_bytes(b"")
+	(original / "library.json").write_text('{"version": 1, "playlists": []}', encoding="utf-8")
+	(original / "settings.json").write_text(json.dumps({
+		"use_cookies": True, "cookies_file": str(login / "popup-cookies.txt"), "output_dir": "/music",
+	}), encoding="utf-8")
+	monkeypatch.setattr(settings.sys, "platform", "darwin")
+	monkeypatch.setattr(settings.pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+
+	target = settings._settings_dir()
+
+	copied = target / "youtube-login"
+	assert (copied / "youtube-cookies.txt").read_text(encoding="utf-8").endswith("login")
+	assert (copied / "popup-cookies.txt").read_text(encoding="utf-8").endswith("popup")
+	assert (copied / "firefox" / "cookies.sqlite").read_bytes() == b"db"
+	assert not (copied / "firefox" / ".parentlock").exists()
+	saved = json.loads((target / "settings.json").read_text(encoding="utf-8"))
+	# yt-dlp rewrites the cookie file it gets: it must be the fork's copy, never the original's.
+	assert saved["cookies_file"] == str(copied / "popup-cookies.txt")
+	assert saved["output_dir"] == "/music"
+	assert (login / "popup-cookies.txt").read_text(encoding="utf-8").endswith("popup")
+	assert str(original) in (original / "settings.json").read_text(encoding="utf-8")
+
+
+def test_cookie_file_outside_the_original_folder_is_kept(monkeypatch, tmp_path: pathlib.Path) -> None:
+	import json
+
+	original = tmp_path / "Library" / "Application Support" / "CSVMusic"
+	original.mkdir(parents=True)
+	elsewhere = tmp_path / "Downloads" / "cookies.txt"
+	(original / "settings.json").write_text(json.dumps({"cookies_file": str(elsewhere)}), encoding="utf-8")
+	monkeypatch.setattr(settings.sys, "platform", "darwin")
+	monkeypatch.setattr(settings.pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+
+	target = settings._settings_dir()
+
+	assert json.loads((target / "settings.json").read_text(encoding="utf-8"))["cookies_file"] == str(elsewhere)
+
+
 def test_data_folder_can_be_pointed_elsewhere(monkeypatch, tmp_path: pathlib.Path) -> None:
 	monkeypatch.setenv(settings.DATA_DIR_ENV, str(tmp_path / "custom"))
 

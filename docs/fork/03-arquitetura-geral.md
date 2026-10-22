@@ -150,7 +150,7 @@ Externos: **ffmpeg** (com libmp3lame), **Deno 2.3+ ou Node 22+** (o yt-dlp preci
 
 > Para rodar o seu fork **ao lado** do original sem um bagunçar a biblioteca do outro: mude o nome da pasta em `core/settings.py` (ex.: `CSVMusicTeles`).
 >
-> **Feito em 22/10/2026 (item 0.4, 1.25, 1.26):** o fork usa `~/Library/Application Support/CSVMusicTeles` (copia `settings.json`, `library.json` e `youtube-cookies.txt` do original na primeira abertura, sem mover) e loga em `~/Library/Logs/CSVMusicTeles/app.log` com rotação (5 MB × 4). `save_settings` grava com atraso de 0,3 s, de forma atômica e com `settings.json.bak`; um arquivo ilegível é guardado como `settings.json.unreadable-<data>` em vez de ser apagado. `CSVMUSIC_DATA_DIR` e `CSVMUSIC_LOG_DIR` apontam as pastas para outro lugar (a suíte de testes usa).
+> **Feito em 22/10/2026 (item 0.4, 1.25, 1.26):** o fork usa `~/Library/Application Support/CSVMusicTeles` (copia `settings.json`, `library.json`, `youtube-cookies.txt` e a pasta `youtube-login/` do original na primeira abertura, sem mover, e reescreve o `cookies_file` que apontava para a pasta do original) e loga em `~/Library/Logs/CSVMusicTeles/app.log` com rotação (5 MB × 4). `save_settings` grava com atraso de 0,3 s, de forma atômica e com `settings.json.bak`; um arquivo ilegível é guardado como `settings.json.unreadable-<data>` em vez de ser apagado. `CSVMUSIC_DATA_DIR` e `CSVMUSIC_LOG_DIR` apontam as pastas para outro lugar (a suíte de testes usa).
 
 ---
 
