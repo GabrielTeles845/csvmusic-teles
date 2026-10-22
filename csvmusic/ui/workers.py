@@ -12,7 +12,7 @@ from ytmusicapi import YTMusic
 from csvmusic.core.csv_import import load_csv, tracks_from_csv
 from csvmusic.core.url_import import fetch_music_url
 from csvmusic.core.log import log
-from csvmusic.core.ytmusic_match import find_best, more_candidates, RATE_LIMIT_S, CONFIDENCE_MIN
+from csvmusic.core.ytmusic_match import find_best, more_candidates, skip_log_line, RATE_LIMIT_S, CONFIDENCE_MIN
 from csvmusic.core.downloader import (
 	download_m4a, download_mp3, download_opus, tag_file, yt_thumbnail_bytes, cover_art_url_bytes, write_m3u, sanitize_name,
 	youtube_batch_mitigation, build_ytdlp_mitigation_args, detect_youtube_risk,
@@ -396,26 +396,37 @@ class PipelineWorker(QThread):
 					"forced_match": False
 				}
 
-				if match is None and self.force_download and options:
-					forced_candidates = self._force_download_candidates(t, options)
-					match = forced_candidates[0] if forced_candidates else options[0]
+				# A result with the wrong length is another recording; even a
+				# forced download must not pick it automatically.
+				length_ok_options = [opt for opt in options if not opt.get("duration_mismatch")]
+				if match is None and self.force_download and length_ok_options:
+					forced_candidates = self._force_download_candidates(t, length_ok_options)
+					match = forced_candidates[0] if forced_candidates else length_ok_options[0]
 					confidence = float(match.get("score", confidence or 0.0) or 0.0)
 					payload["match"] = match
 					payload["confidence"] = confidence
 					payload["forced_match"] = True
 
 				if match is None:
+					log(skip_log_line(t, confidence, options, search_error))
 					if search_error:
-						log(f"match skip: query='{t['title']} {t['artists']}' error={search_error}")
 						status = f"Search failed: {search_error[:100]}"
 					elif not options:
 						status = "Skipped (no search results)"
+					elif not length_ok_options:
+						status = "Skipped (wrong length)"
 					else:
-						log(f"match skip: query='{t['title']} {t['artists']}' no candidate >= threshold (confidence={confidence:.2f})")
 						status = "Skipped (low confidence)"
 					payload["skipped"] = True
 					payload["error"] = search_error
-					reason = search_error or ("No search results" if not options else "No confident match")
+					if search_error:
+						reason = search_error
+					elif not options:
+						reason = "No search results"
+					elif not length_ok_options:
+						reason = "No result with the right length"
+					else:
+						reason = "No confident match"
 					skipped_tracks.append({"track": t, "reason": reason, "options": options})
 					self.sig_row_status.emit(row_idx, status)
 					processed += 1

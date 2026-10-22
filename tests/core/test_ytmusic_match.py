@@ -65,8 +65,44 @@ def test_alternative_ranking_can_include_duration_mismatch():
 	})
 	track = {"title": "Tiny Song", "artists": "Artist", "duration_ms": 15000}
 
-	assert ytmusic_match._rank_candidates(yt, track, enforce_duration=True) == []
+	enforced = ytmusic_match._rank_candidates(yt, track, enforce_duration=True)
+	assert [option["duration_mismatch"] for option in enforced] == [True]
 	assert len(ytmusic_match._rank_candidates(yt, track, enforce_duration=False)) == 1
+
+
+def test_duration_mismatch_is_not_an_empty_search(monkeypatch):
+	# Every result is far longer than the requested track (live version).
+	yt = FakeYTMusic({
+		"songs": [{"videoId": "live", "title": "Song (Live)", "artists": [{"name": "Artist"}], "duration": "6:40"}],
+		"videos": [{"videoId": "clip", "title": "Song", "author": "Artist", "duration": "5:30"}],
+	})
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	sleeps = []
+	monkeypatch.setattr(ytmusic_match.time, "sleep", sleeps.append)
+	monkeypatch.setattr(ytmusic_match, "YTMusic", lambda: yt)
+
+	match, confidence, options = ytmusic_match.find_best(yt, track)
+
+	assert match is None
+	assert confidence == 0.0
+	assert {option["videoId"] for option in options} == {"live", "clip"}
+	assert all(option["duration_mismatch"] for option in options)
+	assert sleeps == []  # no retry rounds: the search did return results
+
+
+def test_in_tolerance_result_ranks_above_higher_scoring_mismatch(monkeypatch):
+	yt = FakeYTMusic({
+		"songs": [
+			{"videoId": "long", "title": "Song", "artists": [{"name": "Artist"}], "duration": "6:00"},
+			{"videoId": "fits", "title": "Song", "artists": [{"name": "Artist"}], "duration": "3:20"},
+		],
+	})
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	monkeypatch.setattr(ytmusic_match, "_score", lambda _t, cand: 0.95 if cand["videoId"] == "long" else 0.7)
+	match, confidence, options = ytmusic_match.find_best(yt, track)
+	assert match["videoId"] == "fits"
+	assert confidence == 0.7
+	assert [option["videoId"] for option in options] == ["fits", "long"]
 
 
 def test_confident_youtube_music_song_is_preferred_over_higher_scoring_video(monkeypatch):
@@ -179,3 +215,178 @@ def test_translated_title_floor_rejects_duration_mismatch():
 	}
 
 	assert ytmusic_match._score(track, candidate) < ytmusic_match.CONFIDENCE_MIN
+
+
+def test_strip_noise_removes_feat_credit_only_as_whole_word():
+	assert ytmusic_match._strip_noise("Song (feat. Guest)") == "Song"
+	assert ytmusic_match._strip_noise("Song [ft. Guest]") == "Song"
+	assert ytmusic_match._strip_noise("Song (Radio Edit; featuring Guest)") == "Song"
+	assert ytmusic_match._strip_noise("Undefeated (Defeated)") == "Undefeated Defeated"
+	assert ytmusic_match._strip_noise("Bird (Feather Song)") == "Bird Feather Song"
+
+
+def test_split_title_removes_spotify_dash_suffixes():
+	cases = {
+		"Country House - 2012 Remaster": ("Country House", {"remaster"}),
+		"Wonderwall - Remastered 2014": ("Wonderwall", {"remaster"}),
+		"Song - Radio Edit": ("Song", {"edit"}),
+		"Song - Live at Leeds": ("Song", {"live"}),
+		"Song - Mono": ("Song", set()),
+		"Song - 2009 Mix": ("Song", set()),
+		"Song - From \"Some Film\"": ("Song", set()),
+		"Song (2012 Remaster)": ("Song", {"remaster"}),
+	}
+	for title, (core, markers) in cases.items():
+		got_core, got_markers, guests = ytmusic_match.split_title(title)
+		assert got_core == core, title
+		assert markers <= got_markers, title
+		assert guests == []
+
+
+def test_split_title_keeps_meaningful_title_parts():
+	assert ytmusic_match.split_title("(Don't Fear) The Reaper")[0] == "(Don't Fear) The Reaper"
+	assert ytmusic_match.split_title("Love - Hate")[0] == "Love - Hate"
+	assert ytmusic_match.split_title("Undefeated (Defeated)")[0] == "Undefeated (Defeated)"
+
+
+def test_split_title_moves_feat_and_with_guests_to_artists():
+	core, _markers, guests = ytmusic_match.split_title("Song (feat. Guest One & Guest Two)")
+	assert core == "Song"
+	assert guests == ["Guest One", "Guest Two"]
+	core, _markers, guests = ytmusic_match.split_title("Other Song (with Guest)")
+	assert core == "Other Song"
+	assert guests == ["Guest"]
+
+
+def test_blur_country_house_remaster_scores_above_point_eight():
+	# Real skipped track: Spotify title with " - 2012 Remaster", no duration.
+	track = {"title": "Country House - 2012 Remaster", "artists": "Blur", "duration_ms": 0}
+	candidate = {"title": "Country House", "artists": [{"name": "Blur"}], "author": "Blur", "duration_seconds": 241, "source": "music"}
+	assert ytmusic_match._score(track, candidate) > 0.8
+
+
+def test_feat_guest_in_title_does_not_lower_title_score():
+	track = {"title": "Song (feat. Guest)", "artists": "Artist", "duration_ms": 200000}
+	candidate = {"title": "Song", "artists": [{"name": "Artist"}, {"name": "Guest"}], "duration_seconds": 200, "source": "music"}
+	assert ytmusic_match._score(track, candidate) >= 0.9
+
+
+def test_query_variants_search_title_core_first():
+	track = {"title": "Country House - 2012 Remaster", "artists": "Blur"}
+	variants = ytmusic_match._query_variants(track)
+	assert variants[0] == "Country House Blur"
+	track = {"title": "Song (feat. Guest)", "artists": "Artist, Guest", "isrc": "GBAYE9500001"}
+	assert ytmusic_match._query_variants(track)[0] == "GBAYE9500001 Song Artist, Guest"
+
+
+def test_penalty_terms_match_whole_words_only():
+	cases = [
+		("Demons", "Imagine Dragons"),
+		("Discover", "Artist"),
+		("Undercover Martyn", "Two Door Cinema Club"),
+		("Reverberation", "The 13th Floor Elevators"),
+	]
+	for title, artist in cases:
+		track = {"title": title, "artists": artist, "duration_ms": 200000}
+		candidate = {"title": title, "artists": [{"name": artist}], "duration_seconds": 200, "source": "music"}
+		assert ytmusic_match._score(track, candidate) >= 0.95, title
+	cover = {"title": "Demons (Cover)", "artists": [{"name": "Imagine Dragons"}], "duration_seconds": 200}
+	exact = {"title": "Demons", "artists": [{"name": "Imagine Dragons"}], "duration_seconds": 200}
+	track = {"title": "Demons", "artists": "Imagine Dragons", "duration_ms": 200000}
+	assert ytmusic_match._score(track, exact) - ytmusic_match._score(track, cover) >= 0.08
+
+
+def test_cast_penalty_ignores_castle_and_broadcast():
+	track = {"title": "Castle on the Hill", "artists": "Ed Sheeran", "duration_ms": 261000}
+	# A video upload whose channel does not match the artist name.
+	candidate = {"title": "Castle on the Hill", "author": "Lyrics Channel", "duration_seconds": 261, "source": "videos"}
+	cast = {"title": "Castle on the Hill (Original Cast)", "author": "Lyrics Channel", "duration_seconds": 261, "source": "videos"}
+	assert ytmusic_match._score(track, candidate) - ytmusic_match._score(track, cast) >= 0.3
+	assert ytmusic_match._has_term("castle on the hill", "cast") is False
+	assert ytmusic_match._has_term("broadcast news", "cast") is False
+	assert ytmusic_match._has_term("song original  cast", "original cast") is True
+
+
+def test_requested_album_markers_prefer_the_live_album_version():
+	# Spotify track from a live album with a clean title.
+	track = {"title": "Young Man Blues", "artists": "The Who", "album": "Live at Leeds", "duration_ms": 330000}
+	live = {"title": "Young Man Blues", "artists": [{"name": "The Who"}], "album": {"name": "Live at Leeds"}, "duration_seconds": 330, "source": "music"}
+	studio = {"title": "Young Man Blues", "artists": [{"name": "The Who"}], "album": {"name": "Odds & Sods"}, "duration_seconds": 330, "source": "music"}
+	assert ytmusic_match._score(track, live) > ytmusic_match._score(track, studio)
+
+
+def test_album_named_live_does_not_sink_its_own_tracks():
+	track = {"title": "Violet", "artists": "Hole", "album": "Live Through This", "duration_ms": 204000}
+	same_album = {"title": "Violet", "artists": [{"name": "Hole"}], "album": {"name": "Live Through This"}, "duration_seconds": 204, "source": "music"}
+	assert ytmusic_match._score(track, same_album) >= 0.9
+
+
+def test_bare_mix_is_not_a_remix():
+	for title in ("Song (2009 Mix)", "Song (Mono Mix)", "Song - Stereo Mix"):
+		assert "remix" not in ytmusic_match._version_markers(title), title
+	assert "remix" in ytmusic_match._version_markers("Song (Club Mix)")
+	assert "remix" in ytmusic_match._version_markers("Song (Remixed)")
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	mix = {"title": "Song (2009 Mix)", "artists": [{"name": "Artist"}], "duration_seconds": 200, "source": "music"}
+	assert ytmusic_match._score(track, mix) >= 0.9
+
+
+def test_skip_log_line_shows_real_queries_and_best_candidate():
+	track = {"title": "Country House - 2012 Remaster", "artists": "Blur", "duration_ms": 241000}
+	options = [
+		{"videoId": "abc", "title": "Country House", "artists": [{"name": "Blur"}], "duration_seconds": 241, "source": "music", "score": 0.55},
+		{"videoId": "zzz", "title": "Country House (Live)", "author": "Blur", "duration_seconds": 330, "source": "videos", "score": 0.5, "duration_mismatch": True},
+	]
+	line = ytmusic_match.skip_log_line(track, 0.55, options)
+	assert "'Country House Blur'" in line
+	assert "'Country House 2012 Remaster Blur'" in line
+	assert "best='Country House' by 'Blur' (abc; music, 4:01, score 0.55)" in line
+	assert "best_wrong_length='Country House (Live)'" in line
+	assert "duration_mismatch" in line
+	assert "confidence=0.55" in line
+
+
+def test_skip_log_line_names_the_reason():
+	track = {"title": "Song", "artists": "Artist"}
+	assert "no search results" in ytmusic_match.skip_log_line(track, 0.0, [])
+	assert "error=boom" in ytmusic_match.skip_log_line(track, 0.0, [], "boom")
+	mismatch = [{"videoId": "x", "title": "Song", "score": 0.9, "duration_mismatch": True}]
+	assert "every result has the wrong length" in ytmusic_match.skip_log_line(track, 0.0, mismatch)
+
+
+def test_reliable_duration_uses_steeper_table_with_exact_bonus():
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	def cand(seconds):
+		return {"title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": seconds, "source": "music"}
+	assert ytmusic_match._duration_score(track, cand(201)) == (1.0, 0.05)
+	assert ytmusic_match._duration_score(track, cand(205)) == (0.95, 0.0)
+	assert ytmusic_match._duration_score(track, cand(210)) == (0.8, 0.0)
+	assert ytmusic_match._duration_score(track, cand(218)) == (0.6, 0.0)
+	assert ytmusic_match._duration_score(track, cand(225)) == (0.4, 0.0)
+	assert ytmusic_match._duration_score(track, cand(260)) == (0.2, 0.0)
+	# Same text: an exact length (1 s) beats a 25 s difference by a wide margin.
+	assert ytmusic_match._score(track, cand(201)) - ytmusic_match._score(track, cand(225)) >= 0.25
+
+
+def test_unreliable_or_missing_duration_keeps_lenient_table():
+	guessed = {"title": "Song", "artists": "Artist", "duration_ms": 200000, "duration_source": "deezer"}
+	cand = {"title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": 201}
+	assert ytmusic_match._duration_score(guessed, cand) == (1.0, 0.0)
+	assert ytmusic_match._duration_score(guessed, dict(cand, duration_seconds=225)) == (0.62, 0.0)
+	assert ytmusic_match._duration_score({"title": "Song"}, cand) == (0.7, 0.0)
+
+
+def test_music_video_with_long_intro_loses_to_exact_song():
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	song = {"videoId": "song", "title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": 200, "source": "music"}
+	clip = {"videoId": "clip", "title": "Song (Official Video)", "author": "Artist Official", "duration_seconds": 235, "source": "videos"}
+	assert ytmusic_match._score(track, song) > ytmusic_match._score(track, clip)
+
+
+def test_minute_second_precision_widens_comparison_by_one_second():
+	# "3:20" from a spreadsheet: stored as 200.5 s with 1 s precision.
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200500, "duration_precision_s": 1}
+	cand = {"title": "Song", "artists": [{"name": "Artist"}], "duration_seconds": 203}
+	assert ytmusic_match._duration_score(track, cand) == (1.0, 0.05)
+	short = {"duration_ms": 15000, "duration_precision_s": 1}
+	assert ytmusic_match._duration_within_tolerance(short, {"duration_seconds": 24}) is True

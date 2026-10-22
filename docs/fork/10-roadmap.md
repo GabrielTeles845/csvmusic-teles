@@ -50,12 +50,12 @@ A cada música baixada a janela congela ~0,5 s, e até ~1,3 s quando também red
 Cada item é pequeno e independente. Faça **um commit por item**.
 
 ### Busca (doc 04 §2)
-- [ ] 1.1 `split_title`: remover sufixos do Spotify " - 2012 Remaster", " - Radio Edit", " - Live…", " - Mono", " - From …" e "(feat./with …)" **na busca e na nota**; convidados do feat vão para artistas. (`04 §2.3a`) — **resolve o caso Blur 0.59**
-- [ ] 1.2 Penalidades por palavra inteira (`\b`): "Demons"≠"demo", "Discover"≠"cover", "Castle"≠"cast" (`04 bug 18`)
-- [ ] 1.3 Regex de feat com `\b` ("(Defeated)" não é feat) (`04 bug 17`)
-- [ ] 1.4 Marcas de versão simétricas (incluir o álbum da faixa pedida) e `\bmix\b` não é remix (`04 §2.2 itens 4-5`)
-- [ ] 1.5 "Vazio após filtro de duração" ≠ "busca vazia" (não abortar o lote à toa) (`04 bug 4`)
-- [ ] 1.6 Log de pulo mostra as queries reais e o melhor candidato (`04 bug 27`)
+- [x] 1.1 `split_title`: remover sufixos do Spotify " - 2012 Remaster", " - Radio Edit", " - Live…", " - Mono", " - From …" e "(feat./with …)" **na busca e na nota**; convidados do feat vão para artistas. (`04 §2.3a`) — **resolve o caso Blur 0.59**
+- [x] 1.2 Penalidades por palavra inteira (`\b`): "Demons"≠"demo", "Discover"≠"cover", "Castle"≠"cast" (`04 bug 18`)
+- [x] 1.3 Regex de feat com `\b` ("(Defeated)" não é feat) (`04 bug 17`)
+- [x] 1.4 Marcas de versão simétricas (incluir o álbum da faixa pedida) e `\bmix\b` não é remix (`04 §2.2 itens 4-5`)
+- [x] 1.5 "Vazio após filtro de duração" ≠ "busca vazia" (não abortar o lote à toa) (`04 bug 4`)
+- [x] 1.6 Log de pulo mostra as queries reais e o melhor candidato (`04 bug 27`)
 
 ### Download (doc 04)
 - [ ] 1.7 Detecção de bloqueio no stderr **cru** (bug do "not a bot" nunca detectado) (`04 bug 1-2`)
@@ -89,7 +89,8 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 ### Duração da música (doc 13) — garantir que é a música certa
 - [x] 1.27 CSV lê `Duração`/`Duration (ms)` em `m:ss`, `h:mm:ss`, segundos ou ms; guarda `duration_source` e precisão (`13 §4.1`). Leitura em `core/durations.py`. Falta a biblioteca guardar `duration_source`/`duration_precision_s` (hoje `_normalized_track` descarta) (22/10/2026)
 - [x] 1.28 Comando `fill_durations`: preenche a biblioteca atual a partir da planilha pelo ID do Spotify, com backup (`13 §5.1`) — **resolve as 1.124 músicas sem duração**. `python -m csvmusic.tools.fill_durations --csv <planilha> [--library <library.json>] [--dry-run]`; recusa com o app aberto (22/10/2026)
-- [ ] 1.29 Nota mais rígida quando a duração é confiável + fora da tolerância vira `duration_mismatch`, não "busca vazia" (`13 §4.2-4.3`)
+- [x] 1.29 Nota mais rígida quando a duração é confiável + fora da tolerância vira `duration_mismatch`, não "busca vazia" (`13 §4.2-4.3`) — feito em `ytmusic_match.py` (22/10/2026): tabela 1.0+0.05 (≤2 s) / 0.95 / 0.8 / 0.6 / 0.4 / 0.2; "confiável" = tem `duration_ms` e `duration_source` fora de {deezer, itunes, musicbrainz, estimated} (sem `duration_source` conta como confiável); `duration_precision_s` desconta da diferença. Falta o passo 3 do `13 §4.3` (marcar "Revisar" na tela com os 5 candidatos), que é da interface.
+  - Decisões da nota tomadas junto (itens 1.1 e 1.4): remaster pedido e ausente no candidato não penaliza mais (era −0.08; é a mesma gravação, e é o que leva o Blur de 0.765 para 0.845); marca de versão que só o **álbum** pedido tem custa −0.10 quando falta no candidato (a do título continua −0.34), porque nome de álbum engana ("Live Through This"); "mix" sozinho não é remix, só "club/dub/dance/vocal mix".
 - [ ] 1.30 Conferir a duração do arquivo depois de baixar e rejeitar se não bater (`13 §4.4`)
 - [ ] Depois (fase 4/7): enriquecimento automático por embed/Deezer/iTunes, coluna "Duração" na tela, exportar CSV com duração (`13 §5.2-5.3, §4.6`)
 
