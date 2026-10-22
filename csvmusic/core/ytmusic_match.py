@@ -18,7 +18,9 @@ _VERSION_PATTERNS = {
 	"live": r"\blive\b",
 	"acoustic": r"\bacoustic\b",
 	"extended": r"\bextended\b|\blong version\b",
-	"remix": r"\bremix(?:ed)?\b|\bmix\b",
+	# A bare "mix" is usually a mastering note ("2009 Mix", "Mono Mix",
+	# "Stereo Mix"), not a remix; only club-style mixes count.
+	"remix": r"\bremix(?:ed)?\b|\b(?:club|dub|dance|vocal)\s+mix\b",
 	"edit": r"\bedit\b|\bradio version\b",
 	"single": r"\bsingle version\b|\boriginal single\b|\bu\.?s\.? single\b",
 	"remaster": r"\bremaster(?:ed)?\b",
@@ -46,6 +48,7 @@ def _candidate_artist_text(cand: Dict) -> str:
 	return cand.get("author", "") or ""
 
 def _candidate_album_text(cand: Dict) -> str:
+	# Works for requested tracks too: both carry "album" as text or a dict.
 	album = cand.get("album")
 	if isinstance(album, dict):
 		return str(album.get("name") or album.get("title") or "").strip()
@@ -213,8 +216,11 @@ def _score(track: Dict, cand: Dict) -> float:
 
 	# penalties
 	titleblob = _norm_text(cand_title + " " + cand_art)
-	requested_title = _norm_text(track.get("title") or "")
-	requested_versions = _version_markers(requested_title)
+	# Read markers from the requested album too, mirroring the candidate side,
+	# so a track from "Live at Leeds" is not steered to the studio version.
+	requested_title_versions = _version_markers(track.get("title") or "")
+	requested_album_versions = _version_markers(_candidate_album_text(track)) - requested_title_versions
+	requested_versions = requested_title_versions | requested_album_versions
 	candidate_versions = _candidate_version_markers(cand)
 	p_pen = 0.0
 	for t in _PENALTY_TERMS:
@@ -223,7 +229,11 @@ def _score(track: Dict, cand: Dict) -> float:
 	if requested_versions:
 		for marker in requested_versions - candidate_versions:
 			# A remaster is the same recording; its absence is not a penalty.
-			p_pen += 0.0 if marker == "remaster" else 0.34
+			# Album names are weaker evidence ("Live Through This" is a studio
+			# album), so a marker only the album carries costs less.
+			if marker == "remaster":
+				continue
+			p_pen += 0.34 if marker in requested_title_versions else 0.10
 		for marker in candidate_versions - requested_versions:
 			p_pen += 0.03 if marker == "remaster" else 0.26
 	else:

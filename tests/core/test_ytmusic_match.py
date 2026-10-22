@@ -269,3 +269,27 @@ def test_cast_penalty_ignores_castle_and_broadcast():
 	assert ytmusic_match._has_term("castle on the hill", "cast") is False
 	assert ytmusic_match._has_term("broadcast news", "cast") is False
 	assert ytmusic_match._has_term("song original  cast", "original cast") is True
+
+
+def test_requested_album_markers_prefer_the_live_album_version():
+	# Spotify track from a live album with a clean title.
+	track = {"title": "Young Man Blues", "artists": "The Who", "album": "Live at Leeds", "duration_ms": 330000}
+	live = {"title": "Young Man Blues", "artists": [{"name": "The Who"}], "album": {"name": "Live at Leeds"}, "duration_seconds": 330, "source": "music"}
+	studio = {"title": "Young Man Blues", "artists": [{"name": "The Who"}], "album": {"name": "Odds & Sods"}, "duration_seconds": 330, "source": "music"}
+	assert ytmusic_match._score(track, live) > ytmusic_match._score(track, studio)
+
+
+def test_album_named_live_does_not_sink_its_own_tracks():
+	track = {"title": "Violet", "artists": "Hole", "album": "Live Through This", "duration_ms": 204000}
+	same_album = {"title": "Violet", "artists": [{"name": "Hole"}], "album": {"name": "Live Through This"}, "duration_seconds": 204, "source": "music"}
+	assert ytmusic_match._score(track, same_album) >= 0.9
+
+
+def test_bare_mix_is_not_a_remix():
+	for title in ("Song (2009 Mix)", "Song (Mono Mix)", "Song - Stereo Mix"):
+		assert "remix" not in ytmusic_match._version_markers(title), title
+	assert "remix" in ytmusic_match._version_markers("Song (Club Mix)")
+	assert "remix" in ytmusic_match._version_markers("Song (Remixed)")
+	track = {"title": "Song", "artists": "Artist", "duration_ms": 200000}
+	mix = {"title": "Song (2009 Mix)", "artists": [{"name": "Artist"}], "duration_seconds": 200, "source": "music"}
+	assert ytmusic_match._score(track, mix) >= 0.9
