@@ -1,21 +1,25 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="csvmusic-token" content="{{CSVMUSIC_TOKEN}}">
-<title>CSVMusic</title>
-<style>
-	:root { color-scheme: light dark; --fundo: #f6f5f2; --texto: #1d1c1a; }
-	@media (prefers-color-scheme: dark) { :root { --fundo: #161514; --texto: #ecebe8; } }
-	body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--fundo); color: var(--texto); font: 16px/1.5 -apple-system, system-ui, sans-serif; }
-	main { max-width: 32rem; padding: 0 16px; }
-</style>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="csvmusic-token" content="{{CSVMUSIC_TOKEN}}">
+	<meta name="color-scheme" content="light dark">
+	<title>CSVMusic</title>
+	<script src="/static/js/tema-cedo.js"></script>
+	<link rel="preload" href="/static/fonts/figtree-400.woff2" as="font" type="font/woff2" crossorigin>
+	<link rel="preload" href="/static/fonts/figtree-600.woff2" as="font" type="font/woff2" crossorigin>
+	<link rel="stylesheet" href="/static/css/tokens.css">
+	<link rel="stylesheet" href="/static/css/app.css">
+	<link rel="stylesheet" href="/static/css/camadas.css">
+	<link rel="stylesheet" href="/static/css/demo.css">
+	<script type="module" src="/static/js/main.js"></script>
 </head>
 <body>
-<main>
-	<h1>CSVMusic</h1>
-	<p>O app está aberto. A tela nova entra aqui no lugar desta página.</p>
-</main>
+	<div class="app">
+		<aside class="side" aria-label="Lateral"></aside>
+		<main id="main" tabindex="-1"></main>
+		<footer class="bar" hidden></footer>
+	</div>
 </body>
 </html>

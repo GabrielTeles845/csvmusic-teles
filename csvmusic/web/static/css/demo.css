@@ -1,0 +1,89 @@
+/* Demonstração "colar o link e analisar" (js/demo.js). Ciclo de 12 s, tudo em porcentagem:
+   foco 6–46%, digitação 10–34%, clique 40–44%, troca de quadro 50–56%,
+   barra 56–76%, resultado parado 78–98% (2,6 s). */
+
+.demo {
+	position: relative; border: 1px solid var(--line-strong); background: var(--card); border-radius: 16px;
+	padding: 18px; overflow: hidden;
+}
+.demo-rotulo {
+	position: absolute; top: 12px; right: 14px; font-size: 12px; font-weight: 700; color: var(--mut);
+	background: var(--pill); padding: 2px 10px; border-radius: 999px; z-index: 2;
+}
+.demo-palco { display: grid; zoom: .8; }
+.demo-palco > * { grid-area: 1 / 1; }
+.demo-q { display: flex; flex-direction: column; }
+.demo-cab { padding: 2px 0 14px; }
+.demo-cab b { font-size: 20px; font-weight: 700; }
+.demo .abas .aba { pointer-events: none; }
+.demo-campo { position: relative; height: 112px; min-height: 0; overflow: hidden; color: var(--ink); }
+.demo-ph { position: absolute; left: 14px; right: 14px; top: 12px; color: var(--mut); }
+.demo-txt { display: inline-block; white-space: nowrap; clip-path: inset(0 100% 0 0); }
+.demo-pe { display: flex; gap: 10px; justify-content: flex-end; margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
+.demo-pe .btn { min-width: 120px; }
+.demo-b { justify-content: flex-start; gap: 10px; }
+.demo-b .side-cab { padding-left: 10px; }
+.demo-b .pl { pointer-events: none; }
+.demo-pm i:nth-child(1) { background: #c9873a; }
+.demo-pm i:nth-child(2) { background: #3f6f8f; }
+.demo-pm i:nth-child(3) { background: #7a8f3f; }
+.demo-pm i:nth-child(4) { background: #8f3f5c; }
+.demo-b .pt small { display: grid; }
+.demo-s1, .demo-s2 { grid-area: 1 / 1; }
+.demo-s2 { opacity: 0; }
+.demo-analise { padding: 12px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
+.demo-lin { color: var(--mut); font-size: 13px; }
+.demo-analise .barra { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.demo-analise .barra i { display: block; height: 100%; width: 0; background: var(--acc); border-radius: 2px; }
+.demo-fim { display: grid; align-items: start; }
+.demo-fim > * { grid-area: 1 / 1; }
+.demo-baixar { justify-self: start; margin: 8px 10px 0; }
+
+/* Linha do tempo */
+.demo-a { animation: demo-a 12s infinite; }
+.demo-b { animation: demo-b 12s infinite; }
+.demo-campo { animation: demo-foco 12s infinite; }
+.demo-ph { animation: demo-ph 12s infinite; }
+.demo-txt { animation: demo-digita 12s infinite; animation-timing-function: steps(var(--passos), end); }
+.demo-clique { animation: demo-clique 12s infinite; }
+.demo-analise .barra i { animation: demo-barra 12s infinite; }
+.demo-s1 { animation: demo-s1 12s infinite step-end; }
+.demo-s2 { animation: demo-s2 12s infinite step-end; }
+.demo-analise { animation: demo-analise 12s infinite; }
+.demo-baixar { animation: demo-baixar 12s infinite; }
+
+@keyframes demo-a { 0%, 50% { opacity: 1; transform: none; } 54%, 98% { opacity: 0; transform: translateY(-8px); } 100% { opacity: 1; transform: none; } }
+@keyframes demo-b { 0%, 52% { opacity: 0; transform: translateY(8px); } 56%, 96% { opacity: 1; transform: none; } 99%, 100% { opacity: 0; } }
+@keyframes demo-foco {
+	0%, 5% { border-color: var(--line-strong); box-shadow: none; }
+	6%, 46% { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
+	48%, 100% { border-color: var(--line-strong); box-shadow: none; }
+}
+@keyframes demo-ph { 0%, 10% { opacity: 1; } 10.5%, 99% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes demo-digita { 0%, 10% { clip-path: inset(0 100% 0 0); } 34%, 99% { clip-path: inset(0 0 0 0); } 100% { clip-path: inset(0 100% 0 0); } }
+@keyframes demo-clique { 0%, 40% { transform: none; filter: none; } 41%, 43% { transform: scale(.96); filter: brightness(.9); } 44%, 100% { transform: none; filter: none; } }
+@keyframes demo-barra { 0%, 56% { width: 0; } 76%, 100% { width: 100%; } }
+@keyframes demo-s1 { 0% { opacity: 1; } 76% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes demo-s2 { 0% { opacity: 0; } 76% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes demo-analise { 0%, 76% { opacity: 1; } 78%, 100% { opacity: 0; } }
+@keyframes demo-baixar { 0%, 77% { opacity: 0; transform: translateY(4px); } 80%, 100% { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+	.demo *, .demo { animation: none !important; }
+	.demo-a { opacity: 0; }
+	.demo-b { opacity: 1; }
+	.demo-s1 { opacity: 0; }
+	.demo-s2 { opacity: 1; }
+	.demo-analise { opacity: 0; }
+	.demo-baixar { opacity: 1; }
+	.demo-txt { clip-path: none; }
+}
+
+/* Linhas de exemplo no fim: as mesmas classes da lista real, sem a posição da lista virtual. */
+.demo-linhas { padding: 14px 0 0; --rh: 52px; }
+.demo-linhas .row { position: static; cursor: default; }
+.demo-linhas .ck input { pointer-events: none; }
+.demo-linhas .demo-cv0 { background: #c9873a; } .demo-linhas .demo-cv1 { background: #3f6f8f; } .demo-linhas .demo-cv2 { background: #8f3f5c; }
+.demo-linhas { animation: demo-baixar 12s infinite; }
+@media (prefers-reduced-motion: reduce) { .demo-linhas { opacity: 1; } }
+@media (max-width: 760px) { .demo-linhas { --rh: 74px; } .demo-linhas .row:nth-child(n+2) { display: none; } }
