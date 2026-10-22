@@ -665,22 +665,32 @@ def _clear_skip(stored: dict) -> None:
 FAILURE_AGE_RESTRICTED = "age_restricted"
 
 
+FAILURE_YOUTUBE_BLOCKED = "youtube_blocked"
+# Failures that a signed-in YouTube session fixes; the app offers to sign in and retry only these.
+ACCOUNT_FAILURES = (FAILURE_AGE_RESTRICTED, FAILURE_YOUTUBE_BLOCKED)
+
+
 def download_failure_kind(error: str | None) -> str | None:
-	"""Name failures the user can act on. Today only age restriction (needs a signed-in YouTube session)."""
-	if error and is_age_restriction_error(str(error)):
+	"""Name failures the user can act on: age restriction and "confirm you are not a bot" (both need a signed-in session)."""
+	if not error:
+		return None
+	if is_age_restriction_error(str(error)):
 		return FAILURE_AGE_RESTRICTED
+	lower = str(error).casefold()
+	if "bot verification" in lower or "not a bot" in lower:
+		return FAILURE_YOUTUBE_BLOCKED
 	return None
 
 
 def age_restricted_targets(failed: list[dict]) -> set[tuple[str, int]]:
-	"""(playlist key, song index) of the batch's failures caused by age restriction.
+	"""(playlist key, song index) of the batch's failures a signed-in YouTube session fixes (age limit, bot check).
 
 	`failed` is the worker's list of {"track": ..., "error": ...}; library tracks carry their ids.
 	"""
 	targets: set[tuple[str, int]] = set()
 	for entry in failed or []:
 		track = entry.get("track") or {}
-		if download_failure_kind(entry.get("error")) != FAILURE_AGE_RESTRICTED or not track.get("library_playlist_id"):
+		if download_failure_kind(entry.get("error")) not in ACCOUNT_FAILURES or not track.get("library_playlist_id"):
 			continue
 		targets.add((str(track["library_playlist_id"]), int(track.get("library_track_index", -1))))
 	return targets

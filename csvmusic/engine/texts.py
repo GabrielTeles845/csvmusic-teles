@@ -60,6 +60,11 @@ def error_summary_pt(error: str | None, failure_kind: str | None = None) -> tupl
 			"Restrição de idade: precisa entrar no YouTube",
 			"Entre na sua conta do YouTube em Ajustes › Conta do YouTube e baixe de novo.",
 		)
+	if failure_kind == "youtube_blocked" or "bot verification" in lower or "not a bot" in lower:
+		return (
+			"O YouTube pediu para confirmar que você não é um robô",
+			"Entre na sua conta do YouTube em Ajustes › Conta do YouTube e baixe de novo. Sem a conta, espere algumas horas antes de tentar.",
+		)
 	risk = detect_youtube_risk(text)
 	if risk:
 		return (
@@ -283,6 +288,8 @@ def warning_pt(message: str) -> str:
 		return "Lote grande: os downloads vão com pausas variadas para o YouTube não bloquear."
 	if lower.startswith("youtube started throttling"):
 		return "O YouTube começou a frear os pedidos. O CSVMusic diminuiu o ritmo sozinho."
+	if lower.startswith("youtube is asking to sign in"):
+		return "O YouTube está pedindo para entrar na sua conta antes de baixar. O download parou para não insistir à toa."
 	if lower.startswith("youtube music search failed repeatedly"):
 		return "A busca no YouTube Music falhou várias vezes seguidas. O download parou; tente mais tarde."
 	if lower.startswith("youtube music returned no results for five tracks"):

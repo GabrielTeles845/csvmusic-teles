@@ -46,7 +46,7 @@ function conteudo() {
 			: acao === "sign_in" ? `<button class="btn pri com-texto" data-b="entrar">${icon("log-in")}Entrar no YouTube</button>` : "";
 		return `<div class="agora"><span class="cv-ic rev">${icon("lock")}</span>
 				<span><b>${pronto ? "Sessão do YouTube pronta" : `${q === 1 ? "1 música pede" : `${n(q)} músicas pedem`} login no YouTube`}</b>
-				<small>${pronto ? "Dá para baixar de novo as que tinham restrição de idade." : "São músicas com restrição de idade."}</small></span></div>
+				<small>${pronto ? "Dá para baixar de novo as que pediam login." : "O YouTube só libera essas músicas com a sua conta."}</small></span></div>
 			<div class="meio"></div>
 			<div class="dir"><button class="btn" data-b="dispensar" aria-label="Agora não">${icon("x")}<span class="so-d">Agora não</span></button>
 				${botao}</div>`;

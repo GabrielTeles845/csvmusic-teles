@@ -75,7 +75,7 @@ Erros: status 4xx/5xx com `{"error": "mensagem em português"}` (alguns trazem c
   "error": null
 }
 ```
-`detail` é a frase curta da situação (motivo do pulo, da revisão, do erro), sempre em português. `quality` só quando o arquivo existe. `error`, quando há erro salvo: `{"summary": "frase curta", "advice": "o que fazer", "technical": "texto original do yt-dlp", "at": "…", "kind": "age_restricted"|null}`. As músicas vêm na ordem da playlist (os filtros separam o que precisa de atenção).
+`detail` é a frase curta da situação (motivo do pulo, da revisão, do erro), sempre em português. `quality` só quando o arquivo existe. `error`, quando há erro salvo: `{"summary": "frase curta", "advice": "o que fazer", "technical": "texto original do yt-dlp", "at": "…", "kind": "age_restricted"|"youtube_blocked"|null}` (`youtube_blocked`: o YouTube pediu para confirmar que não é robô; a tela oferece "Entrar no YouTube"). As músicas vêm na ordem da playlist (os filtros separam o que precisa de atenção).
 
 **Job** (só um por vez)
 ```json
@@ -146,7 +146,7 @@ Cada mensagem: `event: <tipo>` e `data: <json>`.
 | `track` | `{playlist_id, track: Track}` | uma música mudou (resultado, estado em andamento) |
 | `job` | `Job` | progresso; no máximo 4 por segundo |
 | `scan_done` | `{results: [{playlist_id, name, captured, reported_total, status: "ok"\|"incomplete"\|"private"\|"error", message, diff?: {added, removed, unchanged, kept}}]}` | fim de uma rodada de análise (não vem se a rodada foi cancelada) |
-| `download_done` | `{done, skipped, failed, age_restricted: n, age_action: "enable_session"\|"sign_in"\|null, stopped: bool, message}` | fim do download (`age_action`: o botão diz "Usar minha sessão do YouTube" ou "Entrar no YouTube") |
+| `download_done` | `{done, skipped, failed, age_restricted: n, age_action: "enable_session"\|"sign_in"\|null, stopped: bool, message}` | fim do download. `age_restricted` conta as músicas que só baixam com a conta do YouTube (restrição de idade ou pedido de verificação de robô); `age_action`: o botão diz "Usar minha sessão do YouTube" ou "Entrar no YouTube". Depois de 2 músicas seguidas recusadas por verificação de robô, o lote para sozinho |
 | `log` | `{seq, ts, level, message}` | linha nova do log da sessão |
 | `warning` | `{message}` | aviso que a tela mostra em destaque |
 | `account` | `{connected, use_cookies, ok, message}` | login/teste do YouTube terminou |

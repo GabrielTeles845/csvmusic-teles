@@ -37,8 +37,9 @@ function parteViva(t) {
 		c.push(`<button class="btn pri" data-a="aceitar">${icon("check")}Aceitar</button>`);
 		c.push(`<button class="btn" data-a="ir-versao">${icon("replace")}Trocar versão</button>`);
 	} else if (["missing", "error", "not_found", "age_limit", "redownload"].includes(t.state)) {
-		if (ERRO_DE_IDADE.has(t.state)) c.push(`<button class="btn pri" data-a="entrar">${icon("log-in")}Entrar no YouTube</button>`);
-		c.push(`<button class="btn ${ERRO_DE_IDADE.has(t.state) ? "" : "pri"}" data-a="baixar" ${t.enabled === false ? "disabled" : ""}>${icon("download")}Baixar agora</button>`);
+		const pedeConta = ERRO_DE_IDADE.has(t.state) || t.error?.kind === "youtube_blocked";
+		if (pedeConta) c.push(`<button class="btn pri" data-a="entrar">${icon("log-in")}Entrar no YouTube</button>`);
+		c.push(`<button class="btn ${pedeConta ? "" : "pri"}" data-a="baixar" ${t.enabled === false ? "disabled" : ""}>${icon("download")}Baixar agora</button>`);
 	} else if (t.state === "downloaded") {
 		c.push(`<button class="btn" data-a="finder">${icon("folder-open")}Mostrar no Finder</button>`);
 		c.push(`<button class="btn" data-a="rebaixar">${icon("refresh-cw")}Baixar de novo</button>`);

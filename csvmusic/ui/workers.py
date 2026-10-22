@@ -26,6 +26,8 @@ from csvmusic.core.track_output import expected_track_path, track_filename_base
 from csvmusic.core.library import m3u_ready_tracks
 
 _FORCE_FALLBACK_MIN_SCORE = 0.45
+# Songs refused in a row for "sign in to confirm you are not a bot" before the batch stops.
+BLOCKED_TRACKS_BEFORE_STOP = 2
 
 
 class UpdateCheckWorker(QThread):
@@ -409,6 +411,10 @@ class PipelineWorker(QThread):
 			consecutive_search_errors = 0
 			consecutive_empty_searches = 0
 			search_abort_reason: str | None = None
+			# YouTube refusing without a signed-in session fails every song the same way:
+			# stop after two in a row instead of spending the whole playlist on it.
+			consecutive_blocked = 0
+			blocked_abort = False
 			processed = 0
 			for idx, track in enumerate(tracks):
 				row_idx = self.row_indices[idx] if idx < len(self.row_indices) else idx
@@ -571,6 +577,8 @@ class PipelineWorker(QThread):
 							retried = True
 						except Exception as retry_exc:
 							err = str(retry_exc)
+					if not retried and payload.get("failure_kind") is None and detect_youtube_risk(err):
+						payload["failure_kind"] = "youtube_blocked"
 					if not retried:
 						log(f"download failure: playlist='{playlist_name}' track='{artists} — {title}' fmt={self.fmt} error={err}")
 						self.sig_row_status.emit(row_idx, f"Fail: {err[:120]}")
@@ -603,6 +611,11 @@ class PipelineWorker(QThread):
 						self.sig_log.emit(f"[warn] Low YouTube source bitrate: {title} — {quality['codec']} ~{quality['kbps']} kbps")
 						self.sig_row_status.emit(row_idx, "Downloaded — low quality")
 				self.sig_track_result.emit(row_idx, payload)
+				consecutive_blocked = consecutive_blocked + 1 if payload.get("failure_kind") == "youtube_blocked" else 0
+				if consecutive_blocked >= BLOCKED_TRACKS_BEFORE_STOP:
+					blocked_abort = True
+					self.sig_warning.emit("YouTube is asking to sign in before downloading. Stopped the batch.")
+					break
 				if not self._stop and idx < total - 1:
 					time.sleep(self._track_pause_s())
 				time.sleep(0.02)
@@ -623,6 +636,8 @@ class PipelineWorker(QThread):
 			msg = "All tasks finished."
 			if self._stop:
 				msg = "Stopped (partial results saved)."
+			elif blocked_abort:
+				msg = "Stopped because YouTube asked to sign in."
 			elif search_abort_reason:
 				msg = f"Stopped because search is unavailable. {search_abort_reason}"
 			self.sig_done.emit(msg, done_tracks, skipped_tracks, failed_tracks)

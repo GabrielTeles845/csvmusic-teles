@@ -27,7 +27,8 @@ def test_skip_and_review_reasons():
 
 def test_error_summaries():
 	assert texts.error_summary_pt("x", "age_restricted")[0] == "Restrição de idade: precisa entrar no YouTube"
-	assert texts.error_summary_pt("ERROR: Sign in to confirm you're not a bot")[0] == "O YouTube recusou por excesso de pedidos"
+	assert texts.error_summary_pt("ERROR: Sign in to confirm you're not a bot")[0] == "O YouTube pediu para confirmar que você não é um robô"
+	assert texts.error_summary_pt("ERROR: HTTP Error 429: Too Many Requests")[0] == "O YouTube recusou por excesso de pedidos"
 	assert texts.error_summary_pt("wrong length: file 4:10, expected 3:57 (+13 s)")[0] == "O arquivo baixado tem outra duração"
 	assert texts.error_summary_pt("something odd")[0] == "O download falhou"
 
@@ -51,3 +52,10 @@ def test_worker_statuses_map_to_phases():
 	assert texts.status_phase("Skipped (low confidence)") == "skipped"
 	assert texts.status_line_pt("Skipped (wrong length)") == "Pulada: nenhum resultado com a duração certa"
 	assert texts.quality_pt({"codec": "AAC", "kbps": 128, "low": False}) == {"label": "AAC ~128 kbps", "low": False}
+
+
+def test_bot_check_tells_to_sign_in():
+	from csvmusic.engine import texts
+	summary, advice = texts.error_summary_pt("YouTube asked for bot verification: YouTube asked for bot verification. Try Firefox cookies or wait and retry.")
+	assert summary == "O YouTube pediu para confirmar que você não é um robô"
+	assert "Conta do YouTube" in advice

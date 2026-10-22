@@ -583,3 +583,24 @@ def test_skipped_track_reports_reason_with_best_score(monkeypatch, tmp_path):
 	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
 	worker.run()
 	assert results[0]["skip_reason"] == "No confident match on YouTube Music (best score 0.40)"
+
+
+def test_batch_stops_after_two_songs_refused_for_bot_check(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import YouTubeRiskError
+	worker = _pipeline(tmp_path, force_download=True)
+	worker.tracks_override += [dict(worker.tracks_override[0], title=f"Song {n}") for n in range(4)]
+	worker.row_indices = list(range(5))
+	results = []
+	finished = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	worker.sig_done.connect(lambda message, *_rest: finished.append(message))
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "find_best", lambda _yt, _track: _low_confidence_result())
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+	def refuse(*_args, **_kwargs):
+		raise YouTubeRiskError("YouTube asked for bot verification: Try Firefox cookies", "YouTube asked for bot verification")
+	monkeypatch.setattr(worker, "_download_with_profile", refuse)
+	worker.run()
+	assert len(results) == 2
+	assert all(result["failure_kind"] == "youtube_blocked" for result in results)
+	assert finished == ["Stopped because YouTube asked to sign in."]

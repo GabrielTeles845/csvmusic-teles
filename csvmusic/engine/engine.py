@@ -1226,6 +1226,8 @@ class Engine(QObject):
 			age_action = "enable_session" if has_session and not cfg.get("use_cookies") else "sign_in"
 		if message.startswith("Fatal error"):
 			summary = "O download parou por um erro inesperado. Veja o registro."
+		elif message.startswith("Stopped because YouTube asked to sign in"):
+			summary = "O download parou: o YouTube está pedindo para entrar na sua conta. Entre e baixe de novo."
 		elif message.startswith("Stopped because search is unavailable"):
 			summary = "O download parou porque a busca no YouTube Music não está respondendo. Tente mais tarde."
 		elif stopped:

@@ -239,3 +239,11 @@ def test_rescan_keeps_artist_fixed_by_hand():
 	stored["custom_artists"] = True
 	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "one", "title": "Song", "artists": "Artsit"}])
 	assert library["playlists"][0]["tracks"][0]["artists"] == "Artist"
+
+
+def test_bot_check_failure_is_offered_the_sign_in_retry():
+	from csvmusic.core.library import age_restricted_targets, download_failure_kind
+	error = "YouTube asked for bot verification: YouTube asked for bot verification. Try Firefox cookies or wait and retry."
+	assert download_failure_kind(error) == "youtube_blocked"
+	track = {"library_playlist_id": PLAYLIST_ID, "library_track_index": 3}
+	assert age_restricted_targets([{"track": track, "error": error}]) == {(PLAYLIST_ID, 3)}

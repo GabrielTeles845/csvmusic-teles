@@ -25,6 +25,8 @@ _YOUTUBE_RISK_PATTERNS: tuple[tuple[str, str], ...] = (
 	("sign in to confirm you’re not a bot", "YouTube asked for bot verification"),
 	("confirm you’re not a bot", "YouTube asked for bot verification"),
 	("confirm you're not a bot", "YouTube asked for bot verification"),
+	# The summary this app writes itself, so a stored error is still recognized later.
+	("youtube asked for bot verification", "YouTube asked for bot verification"),
 	("this content isn't available, try again later", "YouTube temporarily blocked the session"),
 	("unable to download video data: http error 403", "YouTube rejected the download request"),
 )
