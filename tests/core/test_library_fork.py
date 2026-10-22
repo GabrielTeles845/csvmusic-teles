@@ -74,6 +74,23 @@ def test_rescan_finds_existing_m4a_when_library_has_no_saved_format(tmp_path):
 	assert library["playlists"][0]["tracks"][0]["downloaded_path"] == str(audio)
 
 
+def test_library_of_another_version_raises_clear_error_and_backup_keeps_original(tmp_path):
+	import json
+	import pytest
+	from csvmusic.core.library import LibraryVersionError, backup_library_file, load_library
+	path = tmp_path / "library.json"
+	original = json.dumps({"version": 2, "name": "Mine", "playlists": [{"id": "x"}]})
+	path.write_text(original, encoding="utf-8")
+
+	with pytest.raises(LibraryVersionError, match="version 2"):
+		load_library(path)
+	backup = backup_library_file(path)
+
+	assert backup != path and backup.read_text(encoding="utf-8") == original
+	assert path.read_text(encoding="utf-8") == original
+	assert backup_library_file(path) != backup
+
+
 def test_skip_is_recorded_with_reason_and_date_and_survives_rescan():
 	from csvmusic.core.library import SKIP_NOT_FOUND_ON_YOUTUBE, apply_library_download_result, describe_skip, enabled_tracks
 	library = _library_with_playlist()

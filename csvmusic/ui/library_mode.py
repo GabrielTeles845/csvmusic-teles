@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from csvmusic.core.library import (
-	add_playlist_urls, adjust_status_counts, apply_library_download_result, describe_skip, edit_library_track, enabled_tracks, export_csv,
+	add_playlist_urls, adjust_status_counts, apply_library_download_result, backup_library_file, describe_skip, edit_library_track, enabled_tracks, export_csv,
 	find_library_track, library_status, library_track_path, load_library,
 	import_csv_playlist, mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id,
 	rename_library_playlist, save_library, track_status_counts, write_library_m3us,
@@ -1560,12 +1560,30 @@ class LibraryModeDialog(QDialog):
 			save_settings({"skipped_update_version": update.version})
 
 	def _load_or_create(self) -> dict:
+		self.library_load_error: str | None = None
 		if self.library_path.exists():
 			try:
 				return load_library(self.library_path)
 			except Exception as exc:
 				log(f"library load failed path={self.library_path} error={exc}")
+				# Never save an empty library over a file we could not read: keep it, copy it, and block saving.
+				backup_note = ""
+				try:
+					backup = backup_library_file(self.library_path)
+					backup_note = f"\n\nA copy was saved as:\n{backup}"
+					log(f"library unreadable file copied backup={backup}")
+				except OSError as backup_exc:
+					log(f"library unreadable file backup failed error={backup_exc}")
+				self.library_load_error = (
+					f"CSVMusic could not open your library file and left it untouched:\n{self.library_path}\n\n{exc}"
+					f"{backup_note}\n\nThe library opens empty and changes are not saved until the file can be read again."
+				)
+				QTimer.singleShot(0, self, self._report_library_load_error)
 		return new_library()
+
+	def _report_library_load_error(self) -> None:
+		if self.library_load_error:
+			QMessageBox.critical(self, "Library Not Loaded", self.library_load_error)
 
 	def _load_header_font(self) -> str:
 		font_path = resource_base() / "fonts" / "VCR_OSD_MONO_HEADERS.ttf"
@@ -2191,6 +2209,10 @@ class LibraryModeDialog(QDialog):
 	def _save(self) -> None:
 		self.library_save_timer.stop()
 		self.library_dirty = False
+		if self.library_load_error:
+			log(f"library save blocked: the file could not be read path={self.library_path}")
+			self.status.setText("Library changes are not saved: the library file could not be read.")
+			return
 		save_library(self.library_path, self.library)
 		log(f"library saved path={self.library_path} playlists={len(self.library.get('playlists', []))}")
 		self.path_label.setText(str(self.library_path))
@@ -2205,6 +2227,7 @@ class LibraryModeDialog(QDialog):
 			QMessageBox.critical(self, "Library Error", str(exc))
 			return
 		self.library_path = pathlib.Path(path)
+		self.library_load_error = None
 		self.output_label.setText(self.library.get("output_dir") or "No output folder selected")
 		self.format_combo.setCurrentText(library_format(self.library))
 		self._refresh()

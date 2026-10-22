@@ -7,6 +7,7 @@ import os
 import pathlib
 import unicodedata
 import re
+import shutil
 import tempfile
 from typing import Any
 from urllib.parse import urlparse
@@ -36,14 +37,37 @@ def new_library(name: str = "My Library", output_dir: str = "") -> dict:
 	}
 
 
+class LibraryVersionError(ValueError):
+	"""The file is a CSVMusic library, but of a version this build cannot read (no migration exists)."""
+
+
 def load_library(path: str | pathlib.Path) -> dict:
 	with pathlib.Path(path).open("r", encoding="utf-8") as handle:
 		data = json.load(handle)
-	if not isinstance(data, dict) or data.get("version") != LIBRARY_VERSION:
+	if not isinstance(data, dict):
+		raise ValueError("This is not a supported CSVMusic library file.")
+	if data.get("version") != LIBRARY_VERSION:
+		if isinstance(data.get("playlists"), list):
+			raise LibraryVersionError(
+				f"This library was saved as version {data.get('version')!r}; this CSVMusic reads version {LIBRARY_VERSION}."
+			)
 		raise ValueError("This is not a supported CSVMusic library file.")
 	if not isinstance(data.get("playlists"), list):
 		raise ValueError("The library playlist list is invalid.")
 	return data
+
+
+def backup_library_file(path: str | pathlib.Path) -> pathlib.Path:
+	"""Copy a library file that could not be read next to it, without touching the original."""
+	source = pathlib.Path(path)
+	stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+	target = source.with_name(f"{source.name}.unreadable-{stamp}.bak")
+	counter = 1
+	while target.exists():
+		counter += 1
+		target = source.with_name(f"{source.name}.unreadable-{stamp}-{counter}.bak")
+	shutil.copy2(source, target)
+	return target
 
 
 def save_library(path: str | pathlib.Path, library: dict) -> None:

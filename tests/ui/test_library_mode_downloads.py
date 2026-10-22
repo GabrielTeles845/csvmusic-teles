@@ -136,6 +136,31 @@ def test_m3u_is_written_during_the_batch_not_only_at_the_end(library_dialog):
 	assert len(entries) == library_mode.M3U_WRITE_EVERY_TRACKS
 
 
+def test_unreadable_library_is_copied_and_never_overwritten(monkeypatch, tmp_path):
+	monkeypatch.setattr(library_mode, "settings_path", lambda: tmp_path / "data" / "settings.json")
+	monkeypatch.setattr(library_mode, "load_settings", lambda: {"hide_startup_disclaimer": True})
+	path, _output = _make_library(tmp_path, 3)
+	newer = json.loads(path.read_text(encoding="utf-8"))
+	newer["version"] = 2
+	original = json.dumps(newer)
+	path.write_text(original, encoding="utf-8")
+
+	dialog = _QuietLibraryDialog()
+	try:
+		assert dialog.library["playlists"] == []
+		assert "version 2" in dialog.library_load_error
+		dialog.urls_input.setText("https://open.spotify.com/playlist/611N3KSs459UD5IVPH1ES4")
+		dialog._add_urls()
+		dialog.closeEvent(QCloseEvent())
+
+		assert path.read_text(encoding="utf-8") == original
+		backups = list(path.parent.glob("library.json.unreadable-*.bak"))
+		assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == original
+	finally:
+		dialog.deleteLater()
+		QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 def test_scan_cannot_start_while_a_download_runs(library_dialog, monkeypatch):
 	dialog, path, output = library_dialog
 	messages: list[str] = []
