@@ -241,3 +241,31 @@ def test_query_variants_search_title_core_first():
 	assert variants[0] == "Country House Blur"
 	track = {"title": "Song (feat. Guest)", "artists": "Artist, Guest", "isrc": "GBAYE9500001"}
 	assert ytmusic_match._query_variants(track)[0] == "GBAYE9500001 Song Artist, Guest"
+
+
+def test_penalty_terms_match_whole_words_only():
+	cases = [
+		("Demons", "Imagine Dragons"),
+		("Discover", "Artist"),
+		("Undercover Martyn", "Two Door Cinema Club"),
+		("Reverberation", "The 13th Floor Elevators"),
+	]
+	for title, artist in cases:
+		track = {"title": title, "artists": artist, "duration_ms": 200000}
+		candidate = {"title": title, "artists": [{"name": artist}], "duration_seconds": 200, "source": "music"}
+		assert ytmusic_match._score(track, candidate) >= 0.95, title
+	cover = {"title": "Demons (Cover)", "artists": [{"name": "Imagine Dragons"}], "duration_seconds": 200}
+	exact = {"title": "Demons", "artists": [{"name": "Imagine Dragons"}], "duration_seconds": 200}
+	track = {"title": "Demons", "artists": "Imagine Dragons", "duration_ms": 200000}
+	assert ytmusic_match._score(track, exact) - ytmusic_match._score(track, cover) >= 0.09
+
+
+def test_cast_penalty_ignores_castle_and_broadcast():
+	track = {"title": "Castle on the Hill", "artists": "Ed Sheeran", "duration_ms": 261000}
+	# A video upload whose channel does not match the artist name.
+	candidate = {"title": "Castle on the Hill", "author": "Lyrics Channel", "duration_seconds": 261, "source": "videos"}
+	cast = {"title": "Castle on the Hill (Original Cast)", "author": "Lyrics Channel", "duration_seconds": 261, "source": "videos"}
+	assert ytmusic_match._score(track, candidate) - ytmusic_match._score(track, cast) >= 0.3
+	assert ytmusic_match._has_term("castle on the hill", "cast") is False
+	assert ytmusic_match._has_term("broadcast news", "cast") is False
+	assert ytmusic_match._has_term("song original  cast", "original cast") is True

@@ -80,6 +80,12 @@ def _result_author(result: Dict, artists) -> str:
 		return ", ".join(artist_names)
 	return ""
 
+def _has_term(text: str, term: str) -> bool:
+	# Whole words only: "Demons" is not a demo, "Discover" is not a cover and
+	# "Castle" is not a cast.
+	pattern = r"\b" + r"\s+".join(re.escape(part) for part in term.split()) + r"\b"
+	return re.search(pattern, text, flags=re.I) is not None
+
 def _overlap_ratio(needle: set, haystack: set) -> float:
 	return len(needle & haystack) / max(1, len(needle))
 
@@ -212,7 +218,7 @@ def _score(track: Dict, cand: Dict) -> float:
 	candidate_versions = _candidate_version_markers(cand)
 	p_pen = 0.0
 	for t in _PENALTY_TERMS:
-		if t in titleblob:
+		if _has_term(titleblob, t):
 			p_pen += 0.10
 	if requested_versions:
 		for marker in requested_versions - candidate_versions:
@@ -226,9 +232,9 @@ def _score(track: Dict, cand: Dict) -> float:
 		p_pen += 0.30 * len(candidate_versions - {"remaster"})
 	if artist_overlap == 0.0:
 		for t in _CAST_PENALTY_TERMS:
-			if t in titleblob:
+			if _has_term(titleblob, t):
 				p_pen += 0.18
-	if "tribute" in titleblob and artist_overlap < 0.5:
+	if _has_term(titleblob, "tribute") and artist_overlap < 0.5:
 		p_pen += 0.25
 	version_boost = 0.14 if requested_versions and requested_versions == candidate_versions else 0.0
 	total = max(0.0, d_score * 0.35 + title_overlap * 0.35 + artist_overlap * 0.25 + ch_boost + version_boost - p_pen)
@@ -243,7 +249,7 @@ def _score(track: Dict, cand: Dict) -> float:
 		and yt_s > 0
 		and abs(sp_s - yt_s) <= 3
 		and requested_versions == candidate_versions
-		and not any(term in titleblob for term in _PENALTY_TERMS)
+		and not any(_has_term(titleblob, term) for term in _PENALTY_TERMS)
 	)
 	if translated_catalog_match:
 		total = max(total, 0.68)
