@@ -22,7 +22,11 @@
 2. Mantenha o **histórico do git** (autoria) e um aviso no README: "Fork pessoal de [angall1/CSVMusic](https://github.com/angall1/CSVMusic)".
 3. **Não apague** nada da pasta `licenses/`.
 
-### Decisão (22/10/2026): repositório privado
+### Decisão (22/10/2026, à tarde): fork público por enquanto
+
+O Gabriel mudou de ideia: por enquanto o código fica num **fork público** do original no GitHub (`GabrielTeles845/csvmusic-teles`, criado com `gh repo fork`), o caminho que os termos do GitHub cobrem para um projeto sem licença. O crédito ao autor fica no histórico do git e no aviso do README. Forks do GitHub começam com o GitHub Actions desligado, então o `release.yml` herdado (que dispara em push na `main` quando muda `csvmusic/version.py`) não roda. A decisão abaixo, de repositório privado, fica como registro e pode voltar.
+
+### Decisão anterior (22/10/2026): repositório privado
 
 O fork vai para um **repositório privado** no GitHub do Gabriel, não um fork público (fork do GitHub não pode ser privado). No clone local, o remoto do original passou a se chamar `upstream`, para trazer correções do autor com `git fetch upstream`. O remoto `origin` fica para o repositório privado, criado pelo Gabriel com:
 

@@ -1,3 +1,5 @@
+> **Fork pessoal** de [angall1/CSVMusic](https://github.com/angall1/CSVMusic), com interface nova em português, motor separado da tela e vários consertos. Todo o crédito do programa original é do autor. Detalhes do fork em [`docs/fork/`](docs/fork/README.md).
+
 # CSVMusic
 
 <table align="center">

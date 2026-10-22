@@ -181,5 +181,6 @@ Substitui a recomendação da §3. O Gabriel quer usar o app também pelo navega
   - o download em andamento fica numa barra fixa embaixo, no formato de "tocando agora";
   - tema escuro e claro; no celular a lateral some, as contagens vão ao lado da capa e a situação desce para baixo do artista.
 - **Fonte:** Figtree. **Ícones:** Lucide.
+- **Amarelo de destaque aprovado (22/10/2026):** `--acc: #f0c03a` com texto `#1c1a10` por cima; no tema claro, texto amarelo em `#7d5f00` (contraste). O Gabriel elogiou: não trocar sem ele pedir.
 - **Cores conferidas** (contraste ≥ 4,5:1 em todos os pares de texto). Música desmarcada apaga só a capa; o texto fica cinza legível.
 - **Referência:** `../referencia-design/d3-dark.html` e `d3-light.html`, fora do repositório porque usam capas reais. Prints em `../revisao/`.
