@@ -104,3 +104,21 @@ def test_close_writes_pending_results(library_dialog):
 	# Call the handler directly: close() on the last window would ask the shared test QApplication to quit.
 	dialog.closeEvent(QCloseEvent())
 	assert load_library(path)["playlists"][0]["tracks"][2]["last_downloaded_at"]
+
+
+def test_skipped_song_is_saved_and_shown_as_not_found(library_dialog):
+	dialog, path, output = library_dialog
+	dialog.download_row_targets = {3: ("spotify:big", 3)}
+	track = enabled_tracks(dialog.library, {"spotify:big"})[3]
+	payload = {
+		"track": track, "downloaded": False, "error": None, "skipped": True,
+		"options": [{"videoId": "x"}], "match": None, "confidence": 0.5,
+	}
+
+	dialog._download_track_result(3, payload)
+
+	assert dialog.track_state_labels[("spotify:big", 3)].text() == "Not found"
+	dialog._flush_library()
+	saved = load_library(path)["playlists"][0]["tracks"][3]
+	assert saved["skip_state"] == "not_found_on_youtube"
+	assert "best score 0.50" in saved["skip_reason"]

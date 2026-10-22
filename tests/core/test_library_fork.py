@@ -49,3 +49,33 @@ def test_rescan_with_new_duration_replaces_previous_one():
 	track = library["playlists"][0]["tracks"][0]
 	assert track["duration_ms"] == 216500
 	assert track["duration_source"] == "spotify"
+
+
+def test_skip_is_recorded_with_reason_and_date_and_survives_rescan():
+	from csvmusic.core.library import SKIP_NOT_FOUND_ON_YOUTUBE, apply_library_download_result, describe_skip, enabled_tracks
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "one", "title": "Song", "artists": "Artist"}])
+	track = enabled_tracks(library)[0]
+
+	stored = apply_library_download_result(
+		library, PLAYLIST_ID, track, downloaded=False, skipped=True, skip_reason=describe_skip([{"videoId": "x"}], 0.42),
+	)
+
+	assert stored["skip_state"] == SKIP_NOT_FOUND_ON_YOUTUBE
+	assert stored["skip_reason"] == "No confident match on YouTube Music (best score 0.42)"
+	assert stored["skipped_at"]
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "one", "title": "Song", "artists": "Artist"}])
+	assert library["playlists"][0]["tracks"][0]["skip_state"] == SKIP_NOT_FOUND_ON_YOUTUBE
+
+
+def test_successful_download_clears_recorded_skip():
+	from csvmusic.core.library import apply_library_download_result, describe_skip, enabled_tracks
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "one", "title": "Song", "artists": "Artist"}])
+	track = enabled_tracks(library)[0]
+	apply_library_download_result(library, PLAYLIST_ID, track, downloaded=False, skipped=True, skip_reason=describe_skip([], 0))
+	assert library["playlists"][0]["tracks"][0]["skip_reason"] == "No search results on YouTube Music"
+
+	stored = apply_library_download_result(library, PLAYLIST_ID, track, downloaded=True, match={"videoId": "v"})
+
+	assert stored["skip_state"] is None and stored["skip_reason"] is None and stored["skipped_at"] is None

@@ -319,6 +319,8 @@ def merge_playlist_scan(
 		track["downloaded_path"] = old_downloaded_path or None
 		track["low_confidence_review"] = bool(old.get("low_confidence_review", False))
 		track["download_confidence"] = old.get("download_confidence")
+		for field in _SKIP_FIELDS:
+			track[field] = old.get(field) or None
 		merged.append(track)
 	removed = [old for key, old in previous.items() if key not in seen]
 	playlist.update({
@@ -431,14 +433,22 @@ def apply_library_download_result(
 	match: dict | None = None,
 	low_confidence: bool = False,
 	confidence: float | None = None,
+	skipped: bool = False,
+	skip_reason: str | None = None,
 ) -> dict | None:
-	"""Apply one download outcome to the in-memory library and return the stored track (None if not found)."""
+	"""Apply one download outcome to the in-memory library and return the stored track (None if not found).
+
+	A skip (no confident YouTube match) is recorded as `skip_state="not_found_on_youtube"` with its reason and date,
+	so the song stops looking like an unexplained "missing".
+	"""
 	playlist = playlist_by_id(library, playlist_id)
 	if playlist is None:
 		return None
 	stored = find_library_track(playlist, track)
 	if stored is None:
 		return None
+	if downloaded or error:
+		_clear_skip(stored)
 	if downloaded:
 		stored["force_redownload"] = False
 		stored["last_error"] = None
@@ -474,7 +484,28 @@ def apply_library_download_result(
 	elif error:
 		stored["last_error"] = str(error).strip()[:4000]
 		stored["last_error_at"] = _now()
+	elif skipped:
+		stored["skip_state"] = SKIP_NOT_FOUND_ON_YOUTUBE
+		stored["skip_reason"] = str(skip_reason or "No confident match on YouTube Music").strip()[:500]
+		stored["skipped_at"] = _now()
 	return stored
+
+
+SKIP_NOT_FOUND_ON_YOUTUBE = "not_found_on_youtube"
+_SKIP_FIELDS = ("skip_state", "skip_reason", "skipped_at")
+
+
+def _clear_skip(stored: dict) -> None:
+	for field in _SKIP_FIELDS:
+		stored[field] = None
+
+
+def describe_skip(options: list | None, confidence: float | None) -> str:
+	"""Explain a skipped song the way the user needs it: nothing found, or nothing close enough."""
+	if not options:
+		return "No search results on YouTube Music"
+	best = float(confidence or 0.0)
+	return f"No confident match on YouTube Music (best score {best:.2f})"
 
 
 def find_library_track(playlist: dict, track: dict) -> dict | None:

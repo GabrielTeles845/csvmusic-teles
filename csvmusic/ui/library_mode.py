@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from csvmusic.core.library import (
-	add_playlist_urls, adjust_status_counts, apply_library_download_result, edit_library_track, enabled_tracks, export_csv,
+	add_playlist_urls, adjust_status_counts, apply_library_download_result, describe_skip, edit_library_track, enabled_tracks, export_csv,
 	find_library_track, library_status, library_track_path, load_library,
 	import_csv_playlist, mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id,
 	rename_library_playlist, save_library, track_status_counts,
@@ -2950,6 +2950,7 @@ class LibraryModeDialog(QDialog):
 		audio_path = library_track_path(candidate, output, fmt, listing_cache=listing_cache)
 		file_exists = audio_path.exists()
 		quality = audio_quality(audio_path) if file_exists else None
+		not_found = bool(track.get("skip_state")) and not file_exists and not has_error
 		if needs_review:
 			state = "Review"
 		elif has_error:
@@ -2958,6 +2959,8 @@ class LibraryModeDialog(QDialog):
 			state = "Redownload"
 		elif file_exists:
 			state = "Downloaded"
+		elif not_found:
+			state = "Not found"
 		else:
 			state = "Missing"
 		downloaded_title = str(track.get("downloaded_video_title") or "").strip() if file_exists else ""
@@ -2969,6 +2972,9 @@ class LibraryModeDialog(QDialog):
 			else f'Downloaded: "{downloaded_title}"' if downloaded_title
 			else ""
 		)
+		if not_found:
+			skipped_on = str(track.get("skipped_at") or "")[:10]
+			youtube_info = f"Skipped: {track.get('skip_reason') or 'no confident match'}" + (f" ({skipped_on})" if skipped_on else "")
 		track_gain = int(track.get("audio_volume_gain", 0) or 0)
 		if track_gain:
 			gain_text = f"Song level: {track_gain:+d} dB"
@@ -3051,6 +3057,7 @@ class LibraryModeDialog(QDialog):
 			else "Last download failed" if has_error
 			else "Replacement queued for the next Download run" if track.get("force_redownload")
 			else "Audio file found" if icon_kind == "downloaded"
+			else f"Skipped: {track.get('skip_reason') or 'no confident match'}" if not_found
 			else "Audio file is missing"
 		)
 		card_layout.addWidget(status_icon)
@@ -3654,7 +3661,7 @@ class LibraryModeDialog(QDialog):
 				"error",
 				f"{track.get('artists') or 'Unknown artist'} — {track.get('title') or 'Unknown song'}: {payload['error']}",
 			)
-		if track.get("library_playlist_id") and (payload.get("downloaded") or payload.get("error")):
+		if track.get("library_playlist_id") and (payload.get("downloaded") or payload.get("error") or payload.get("skipped")):
 			self._apply_download_payload(str(track["library_playlist_id"]), track, payload, self.download_row_targets.get(row))
 
 	def _apply_download_payload(self, playlist_id: str, track: dict, payload: dict, target: tuple[str, int] | None) -> None:
@@ -3671,6 +3678,8 @@ class LibraryModeDialog(QDialog):
 			self.library, playlist_id, track,
 			downloaded=bool(payload.get("downloaded")), error=payload.get("error"), match=payload.get("match"),
 			low_confidence=bool(payload.get("low_confidence")), confidence=payload.get("confidence"),
+			skipped=bool(payload.get("skipped")),
+			skip_reason=describe_skip(payload.get("options"), payload.get("confidence")) if payload.get("skipped") else None,
 		)
 		after = track_status_counts(stored, name, output, fmt)
 		playlist_key = f"{playlist.get('platform') or 'spotify'}:{playlist.get('id')}"
