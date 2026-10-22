@@ -151,3 +151,50 @@ def test_missing_columns_error_lists_what_was_found(tmp_path):
 		assert "Coluna A" in str(exc)
 	else:
 		raise AssertionError("expected ValueError")
+
+
+def test_portuguese_duration_column_in_mss_becomes_ms_with_precision(tmp_path):
+	path = tmp_path / "curtidas.csv"
+	_write_pt_export(path, [
+		'"1";"Canção Inventada";"Banda Fictícia";"Álbum";"12 de out. de 2025";"2:57";"https://open.spotify.com/track/0000000000000000000001"',
+		'"2";"Sem Duração";"Banda Fictícia";"Álbum";"12 de out. de 2025";"";"https://open.spotify.com/track/0000000000000000000002"',
+	])
+
+	tracks = tracks_from_csv(load_csv(path))
+
+	assert tracks[0]["duration_ms"] == 177500
+	assert tracks[0]["duration_source"] == "csv"
+	assert tracks[0]["duration_precision_s"] == 1
+	assert tracks[1]["duration_ms"] == 0
+	assert tracks[1]["duration_source"] is None
+	assert tracks[1]["duration_precision_s"] is None
+
+
+def test_duration_ms_column_with_mss_text_is_still_read(tmp_path):
+	path = tmp_path / "mixed.csv"
+	path.write_text("Track name,Artist name,Duration (ms)\nA,B,2:57\nC,D,187400\n", encoding="utf-8")
+
+	tracks = tracks_from_csv(load_csv(path))
+
+	assert tracks[0]["duration_ms"] == 177500
+	assert tracks[1]["duration_ms"] == 187400
+	assert tracks[1]["duration_precision_s"] == 0
+
+
+def test_duration_in_seconds_and_spanish_header(tmp_path):
+	path = tmp_path / "es.csv"
+	path.write_text("Canción;Artista;Duración (s)\nTema;Grupo;245\n", encoding="utf-8")
+
+	track = tracks_from_csv(load_csv(path))[0]
+
+	assert track["duration_ms"] == 245000
+	assert track["duration_precision_s"] == 1
+
+
+def test_bpm_tempo_column_does_not_override_duration(tmp_path):
+	path = tmp_path / "exportify.csv"
+	path.write_text("Track Name,Artist Name(s),Tempo,Duration (ms)\nSong,Artist,120.5,187400\n", encoding="utf-8")
+
+	track = tracks_from_csv(load_csv(path))[0]
+
+	assert track["duration_ms"] == 187400

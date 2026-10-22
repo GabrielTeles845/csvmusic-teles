@@ -7,6 +7,7 @@ import unicodedata
 from typing import Union, List, Dict, Optional
 import pandas as pd
 
+from csvmusic.core.durations import parse_duration
 from csvmusic.core.log import log
 
 # Canonical column names we expect. Keys are compared after _norm_header():
@@ -70,6 +71,19 @@ _CANON = {
 	# Optional/ignored if missing:
 	"type": "Type",
 	"duration ms": "Duration (ms)",
+	"duration": "Duration (ms)",
+	"duration s": "Duration (ms)",
+	"duration seconds": "Duration (ms)",
+	"duration milliseconds": "Duration (ms)",
+	"duracao": "Duration (ms)",
+	"duracao ms": "Duration (ms)",
+	"duracao s": "Duration (ms)",
+	"duracion": "Duration (ms)",
+	"duracion ms": "Duration (ms)",
+	"duracion s": "Duration (ms)",
+	"tempo": "Duration (ms)",
+	"length": "Duration (ms)",
+	"time": "Duration (ms)",
 	"track number": "Track number",
 	"track no": "Track number",
 	"numero da faixa": "Track number",
@@ -96,6 +110,36 @@ def _norm_header(value: object) -> str:
 
 
 _CANON_BY_KEY = {_norm_header(k): v for k, v in _CANON.items()}
+
+# Generic names that only count when no specific name for the same column exists
+# (Exportify, for example, has both "Duration (ms)" and "Tempo" in BPM).
+_WEAK_KEYS = {"tempo", "time", "length", "title", "track", "song", "url"}
+
+
+def _header_map(columns) -> Dict[object, str]:
+	"""Original column → canonical name. Specific names win over generic ones, then the first column wins."""
+	ranked = sorted(
+		(c for c in columns if _norm_header(c) in _CANON_BY_KEY),
+		key=lambda c: _norm_header(c) in _WEAK_KEYS,
+	)
+	mapping: Dict[object, str] = {}
+	taken = set()
+	for col in ranked:
+		canon = _CANON_BY_KEY[_norm_header(col)]
+		if canon not in taken:
+			mapping[col] = canon
+			taken.add(canon)
+	return mapping
+
+
+def _duration_unit(header: object) -> str:
+	""""ms" or "s" when the duration column says its unit, "auto" otherwise."""
+	words = _norm_header(header).split()
+	if any(w in {"ms", "milliseconds", "milissegundos", "milisegundos"} for w in words):
+		return "ms"
+	if any(w in {"s", "sec", "secs", "seconds", "segundos"} for w in words):
+		return "s"
+	return "auto"
 
 
 def _decode(raw: bytes) -> str:
@@ -147,15 +191,9 @@ def _normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
 	"""
 	Return a copy of df with standardized column names per _CANON.
 	Matches ignoring case, accents and punctuation. When two columns map to the
-	same canonical name, the first one wins and the other keeps its own name.
+	same canonical name, the specific one (then the first) wins; the other keeps its name.
 	"""
-	renames = {}
-	taken = set()
-	for col in df.columns:
-		canon = _CANON_BY_KEY.get(_norm_header(col))
-		if canon and canon not in taken:
-			renames[col] = canon
-			taken.add(canon)
+	renames = _header_map(df.columns)
 	# apply
 	out = df.copy()
 	if renames:
@@ -171,6 +209,7 @@ def load_csv(path: Union[str, pathlib.Path]) -> pd.DataFrame:
 	if not p.exists():
 		raise FileNotFoundError(str(p))
 	df = _read_csv_robust(p)
+	duration_header = next((c for c, canon in _header_map(df.columns).items() if canon == "Duration (ms)"), None)
 	df = _normalize_headers(df)
 	if "Playlist name" not in df.columns:
 		df["Playlist name"] = p.stem
@@ -200,8 +239,12 @@ def load_csv(path: Union[str, pathlib.Path]) -> pd.DataFrame:
 	if "Type" in df.columns:
 		df["Type"] = df["Type"].astype(str).fillna("").str.strip().str.lower()
 	if "Duration (ms)" in df.columns:
-		# Best-effort numeric
-		df["Duration (ms)"] = pd.to_numeric(df["Duration (ms)"], errors="coerce").fillna(0).astype(int)
+		# "2:57", "1:02:57", seconds or milliseconds → (ms, precision in seconds)
+		unit = _duration_unit(duration_header)
+		parsed = [parse_duration(v, unit) for v in df["Duration (ms)"].tolist()]
+		df["Duration (ms)"] = [ms for ms, _ in parsed]
+		df["Duration precision (s)"] = [precision for _, precision in parsed]
+		df["Duration (ms)"] = df["Duration (ms)"].astype(int)
 	for column in ("Track number", "Disc number"):
 		if column in df.columns:
 			df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0).astype(int)
@@ -278,13 +321,16 @@ def tracks_from_csv(df: pd.DataFrame, playlist: Optional[str] = None) -> List[Di
 		isrc = str(r.get("ISRC", "")).strip()
 		spid = _spotify_track_id(r.get("Spotify - id", "")) or _spotify_track_id(r.get("Link", ""))
 		# duration if present
+		dur_ms = 0
+		precision = None
 		if "Duration (ms)" in work.columns:
 			try:
 				dur_ms = int(r.get("Duration (ms)", 0)) if pd.notna(r.get("Duration (ms)")) else 0
 			except Exception:
 				dur_ms = 0
-		else:
-			dur_ms = 0
+			raw_precision = r.get("Duration precision (s)")
+			if dur_ms > 0 and raw_precision is not None and pd.notna(raw_precision):
+				precision = int(raw_precision)
 
 		track_no = int(r.get("Track number", 0) or 0) if "Track number" in work.columns else 0
 		disc_no = int(r.get("Disc number", 0) or 0) if "Disc number" in work.columns else 0
@@ -296,6 +342,8 @@ def tracks_from_csv(df: pd.DataFrame, playlist: Optional[str] = None) -> List[Di
 			"isrc": isrc if isrc and isrc.lower() != "nan" else None,
 			"sp_id": spid,
 			"duration_ms": dur_ms,
+			"duration_source": "csv" if dur_ms > 0 else None,
+			"duration_precision_s": precision if dur_ms > 0 else None,
 			"year": _release_year(r.get("Release date", "")),
 			"cover_url": str(r.get("Cover URL", "")).strip() or None,
 			"track_no": track_no or position,
