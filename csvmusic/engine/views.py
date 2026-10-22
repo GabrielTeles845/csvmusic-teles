@@ -13,7 +13,7 @@ from __future__ import annotations
 import pathlib
 
 from csvmusic.core.audio_quality import audio_quality
-from csvmusic.core.library import FAILURE_AGE_RESTRICTED, library_track_path
+from csvmusic.core.library import FAILURE_AGE_RESTRICTED, library_track_path, playlist_probes
 from csvmusic.engine import texts
 
 RUNTIME_STATES = ("queued", "matching", "downloading", "tagging")
@@ -269,10 +269,16 @@ def playlist_view(playlist: dict, counts: dict, output_dir: str) -> dict:
 	}
 
 
-def resolve_track_path(playlist: dict, track: dict, output_dir: str, fmt: str, listing_cache: dict | None = None) -> pathlib.Path | None:
+def resolve_track_path(
+	playlist: dict, track: dict, output_dir: str, fmt: str, listing_cache: dict | None = None, probes: list[dict] | None = None,
+) -> pathlib.Path | None:
+	"""File of one song; `probes` (playlist_probes) keeps two songs with the same name from sharing a file."""
 	if not output_dir:
 		return None
 	probe = dict(track)
 	probe["playlist"] = playlist.get("name") or "Playlist"
-	path = library_track_path(probe, pathlib.Path(output_dir), fmt, listing_cache=listing_cache)
+	path = library_track_path(
+		probe, pathlib.Path(output_dir), fmt, listing_cache=listing_cache,
+		playlist_tracks=probes if probes is not None else playlist_probes(playlist),
+	)
 	return path if path.is_file() else None

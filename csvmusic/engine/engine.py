@@ -28,7 +28,7 @@ from csvmusic.core.downloader import sanitize_name, tag_file, write_m3u, youtube
 from csvmusic.core.library import (
 	FAILURE_AGE_RESTRICTED, add_playlist_urls, age_restricted_targets, apply_library_download_result,
 	backup_library_file, clear_playlist_access_error, describe_skip, edit_library_track, enabled_tracks,
-	export_csv, find_library_track, import_csv_playlist, library_track_path, load_library,
+	export_csv, find_library_track, import_csv_playlist, library_track_path, load_library, m3u_ready_tracks, playlist_probes,
 	mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id, rename_library_playlist,
 	save_library, write_library_m3us,
 )
@@ -302,7 +302,8 @@ class Engine(QObject):
 			return cached
 		listing: dict = {}
 		output, fmt = self.output_dir(), self.fmt()
-		paths = [views.resolve_track_path(playlist, track, output, fmt, listing) for track in tracks]
+		probes = playlist_probes(playlist)
+		paths = [views.resolve_track_path(playlist, track, output, fmt, listing, probes) for track in tracks]
 		self._paths_cache[key] = paths
 		return paths
 
@@ -517,7 +518,9 @@ class Engine(QObject):
 			m3u_output = str(cfg.get("m3u_output_dir") or "").strip()
 			if m3u_output:
 				playlist_output_dir = pathlib.Path(m3u_output)
-				playlist_tracks = [dict(track, playlist=updated["name"]) for track in updated.get("tracks", []) if track.get("enabled", True)]
+				# Só o que existe de fato entra na lista (m3u_ready_tracks), como no fim de um download.
+				probes = [dict(track, playlist=updated["name"]) for track in updated.get("tracks", []) if track.get("enabled", True)]
+				playlist_tracks = [row for _name, row in m3u_ready_tracks(probes, self.output_dir(), self.fmt())] if self.output_dir() else []
 				for suffix, setting, encoding in ((".m3u8", "write_m3u8", "utf-8"), (".m3u", "write_m3u_plain", "utf-8-sig")):
 					old_file = playlist_output_dir / f"{sanitize_name(old_name)}{suffix}"
 					if old_file.exists():
@@ -667,7 +670,8 @@ class Engine(QObject):
 				tag_file(new_path, new_probe, None)
 				track["downloaded_path"] = str(new_path)
 			cfg = load_settings()
-			playlist_tracks = [dict(item, playlist=playlist.get("name") or "Playlist") for item in playlist.get("tracks", []) if item.get("enabled", True)]
+			probes = [dict(item, playlist=playlist.get("name") or "Playlist") for item in playlist.get("tracks", []) if item.get("enabled", True)]
+			playlist_tracks = [row for _name, row in m3u_ready_tracks(probes, output_root, fmt)] if self.output_dir() else []
 			if self.output_dir() and cfg.get("write_m3u8", True):
 				write_m3u(output_root, playlist.get("name") or "Playlist", playlist_tracks, fmt, suffix=".m3u8", encoding="utf-8", playlist_output_dir=cfg.get("m3u_output_dir"))
 			if self.output_dir() and cfg.get("write_m3u_plain", False):
@@ -1064,8 +1068,9 @@ class Engine(QObject):
 			_key_of(playlist): len([track for track in playlist.get("tracks", []) if track.get("enabled", True)])
 			for playlist in selected_playlists
 		}
+		listing_cache: dict = {}
 		for track in all_playlist_tracks:
-			existing = library_track_path(track, output_path, fmt)
+			existing = library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=all_playlist_tracks)
 			if existing.is_file():
 				track["downloaded_path"] = str(existing)
 			track["_previous_audio_processing_signature"] = str(track.get("audio_processing_signature") or "")

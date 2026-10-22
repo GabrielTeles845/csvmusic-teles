@@ -15,6 +15,7 @@ from csvmusic.core.apple_music_import import fetch_apple_music_source
 from csvmusic.core.deezer_import import fetch_deezer_source
 from csvmusic.core.device_sync import PortableDevice, list_device_playlists, sync_device
 from csvmusic.core.library import library_track_path
+from csvmusic.core.track_output import unique_output_rows
 from csvmusic.core.log import log
 from csvmusic.core.spotify_import import fetch_spotify_playlist
 from csvmusic.core.youtube_music_import import fetch_youtube_music_source
@@ -47,20 +48,27 @@ def pending_download_tracks(
 	tracks: list[dict], output_path: pathlib.Path, fmt: str, *, audio_signature: str,
 	audio_enabled: bool, prefix_numbers: bool, missing_only: bool = False,
 ) -> list[dict]:
-	"""Músicas que precisam de trabalho; "baixar faltando" quer dizer só arquivo que não existe."""
+	"""Músicas que precisam de trabalho; "baixar faltando" quer dizer só arquivo que não existe.
+
+	Música repetida na playlist divide o arquivo: entra uma vez só na fila (unique_output_rows).
+	"""
+	listing_cache: dict = {}
 	if missing_only:
-		return [track for track in tracks if not library_track_path(track, output_path, fmt).exists()]
-	return [
+		return unique_output_rows([
+			track for track in tracks
+			if not library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=tracks).exists()
+		], output_path, fmt)
+	return unique_output_rows([
 		track for track in tracks
 		if track.get("force_redownload")
-		or not library_track_path(track, output_path, fmt).exists()
+		or not library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=tracks).exists()
 		or (
 			audio_enabled
 			and bool(track.get("_previous_audio_processing_signature"))
 			and track["_previous_audio_processing_signature"] != audio_signature
 		)
 		or bool(track.get("_previous_prefix_numbered")) != prefix_numbers
-	]
+	], output_path, fmt)
 
 
 def legacy_options(cfg: dict) -> dict:

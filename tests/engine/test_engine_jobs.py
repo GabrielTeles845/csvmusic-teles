@@ -271,3 +271,27 @@ def test_job_events_are_throttled(make_engine):
 		engine.download_worker.sig_row_status.emit(0, "Downloading (m4a)…")
 	assert len(engine.events_of("job")) == count
 	assert engine._job_timer.isActive()
+
+
+def test_repeated_song_is_queued_once_keeping_the_hand_picked_row(make_engine):
+	engine = make_engine(3)
+	tracks = engine.library["playlists"][0]["tracks"]
+	tracks[2].update(title=tracks[1]["title"], artists=tracks[1]["artists"], sp_id=tracks[1]["sp_id"], playlist_occurrence=2)
+	tracks[2].update(preferred_video_id="handpicked1", preferred_selection_locked=True)
+	engine.start_download(["spotify:big"])
+	queued = engine.download_worker.kwargs["tracks_override"]
+	assert [track["library_track_index"] for track in queued] == [0, 2]
+
+
+def test_namesake_song_does_not_count_the_other_ones_file(make_engine):
+	engine = make_engine(2)
+	tracks = engine.library["playlists"][0]["tracks"]
+	tracks[1].update(title=tracks[0]["title"], sp_id="live-version")
+	plain = engine.output / "Big" / f"{tracks[0]['artists']} - {tracks[0]['title']}.m4a"
+	plain.parent.mkdir(parents=True, exist_ok=True)
+	plain.write_bytes(b"audio")
+	tracks[0]["filename_prefix_number"] = 1
+	tracks[1]["filename_prefix_number"] = 2
+	engine._paths_cache.clear()
+	counts = engine.playlist_summary("spotify:big")["counts"]
+	assert counts["downloaded"] == 0 and counts["missing"] == 2
