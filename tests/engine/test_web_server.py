@@ -212,6 +212,32 @@ def test_image_host_list():
 	assert sniff_image_type(b"<html>") is None
 
 
+def test_image_cache_stays_under_its_size_limit(tmp_path):
+	import os
+	from csvmusic.web.server import ImageCache
+	cache = ImageCache(tmp_path / "img", lambda url: PNG + url.encode("ascii").ljust(300, b"x"), max_bytes=1000)
+	paths = []
+	for number in range(8):
+		url = f"https://i.scdn.co/image/{number}"
+		cache.get(url)
+		paths.append(cache._path(url))
+		os.utime(paths[-1], (1_000_000 + number, 1_000_000 + number))
+	files = list((tmp_path / "img").glob("*.img"))
+	assert sum(path.stat().st_size for path in files) <= 1000
+	assert paths[-1].exists() and not paths[0].exists()
+	# Uma capa apagada volta a ser baixada quando pedida de novo.
+	data, kind = cache.get("https://i.scdn.co/image/0")
+	assert kind == "image/png" and paths[0].exists()
+
+
+def test_image_cache_locks_do_not_grow_with_every_url(tmp_path):
+	from csvmusic.web.server import ImageCache
+	cache = ImageCache(tmp_path / "img", lambda url: PNG)
+	for number in range(500):
+		cache.get(f"https://i.scdn.co/image/{number}")
+	assert len(cache._locks) <= 64
+
+
 def _raw(server, length: str) -> bytes:
 	with socket.create_connection(("127.0.0.1", server.port), timeout=3) as connection:
 		connection.sendall((

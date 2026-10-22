@@ -35,6 +35,9 @@ TOKEN_HEADER = "X-CSVMusic-Token"
 TOKEN_PLACEHOLDER = "{{CSVMUSIC_TOKEN}}"
 MAX_BODY_BYTES = 60 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# Cache de capas em disco: acima disso, as capas usadas há mais tempo saem (é cache; voltam se pedidas).
+IMAGE_CACHE_MAX_BYTES = 300 * 1024 * 1024
+IMAGE_CACHE_LOCKS = 64
 SSE_KEEPALIVE_S = 15.0
 DIALOG_TIMEOUT_S = 15 * 60.0
 DEFAULT_TIMEOUT_S = 30.0
@@ -105,24 +108,74 @@ def fetch_image(url: str) -> bytes:
 
 
 class ImageCache:
-	def __init__(self, folder: pathlib.Path, fetcher: Callable[[str], bytes] = fetch_image):
+	"""Capas em disco, no máximo `max_bytes`; as usadas há mais tempo (mtime) saem primeiro."""
+
+	def __init__(self, folder: pathlib.Path, fetcher: Callable[[str], bytes] = fetch_image, *, max_bytes: int = IMAGE_CACHE_MAX_BYTES):
 		self.folder = folder
 		self.fetcher = fetcher
-		self._locks: dict[str, threading.Lock] = {}
-		self._guard = threading.Lock()
+		self.max_bytes = int(max_bytes)
+		# Travas fixas por fatia do nome (não uma por endereço, que cresceria sem limite).
+		self._locks = [threading.Lock() for _ in range(IMAGE_CACHE_LOCKS)]
+		self._size_lock = threading.Lock()
+		self._size: int | None = None
 
 	def _path(self, url: str) -> pathlib.Path:
 		return self.folder / (hashlib.sha256(url.encode("utf-8")).hexdigest() + ".img")
 
+	def _lock_for(self, path: pathlib.Path) -> threading.Lock:
+		return self._locks[int(path.name[:8], 16) % len(self._locks)]
+
+	def _files(self) -> list[tuple[int, int, pathlib.Path]]:
+		found = []
+		try:
+			for path in self.folder.glob("*.img"):
+				try:
+					info = path.stat()
+				except OSError:
+					continue
+				found.append((info.st_mtime_ns, info.st_size, path))
+		except OSError:
+			pass
+		return found
+
+	def _added(self, size: int) -> None:
+		with self._size_lock:
+			if self._size is None:
+				self._size = sum(item[1] for item in self._files())
+			else:
+				self._size += size
+			if self._size <= self.max_bytes:
+				return
+			files = sorted(self._files())
+			total = sum(item[1] for item in files)
+			target = int(self.max_bytes * 0.8)
+			removed = 0
+			for _mtime, file_size, path in files:
+				if total <= target:
+					break
+				try:
+					path.unlink()
+				except OSError:
+					continue
+				total -= file_size
+				removed += 1
+			self._size = total
+		log(f"image cache trimmed removed={removed} bytes={total} limit={self.max_bytes}")
+
 	def get(self, url: str) -> tuple[bytes, str]:
 		path = self._path(url)
-		with self._guard:
-			lock = self._locks.setdefault(path.name, threading.Lock())
-		with lock:
+		with self._lock_for(path):
 			if path.is_file():
-				data = path.read_bytes()
+				try:
+					data = path.read_bytes()
+				except OSError:
+					data = b""
 				kind = sniff_image_type(data)
 				if kind:
+					try:
+						path.touch()  # usada agora: fica por último na fila de saída
+					except OSError:
+						pass
 					return data, kind
 			data = self.fetcher(url)
 			kind = sniff_image_type(data)
@@ -132,7 +185,8 @@ class ImageCache:
 			temporary = path.with_suffix(".tmp")
 			temporary.write_bytes(data)
 			temporary.replace(path)
-			return data, kind
+		self._added(len(data))
+		return data, kind
 
 
 class Route:
