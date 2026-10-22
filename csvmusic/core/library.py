@@ -274,7 +274,13 @@ def merge_playlist_scan(
 	reported_total: int | None = None,
 	warning: str | None = None,
 	cover_url: str | None = None,
+	complete: bool = True,
 ) -> dict:
+	"""Merge a fresh scan into a playlist, keeping user choices and file state.
+
+	When the scan is incomplete (`complete=False`), songs it did not see are kept at their old place
+	instead of being removed: a partial read must never delete what an earlier scan found.
+	"""
 	playlist = playlist_by_id(library, playlist_id)
 	if playlist is None:
 		raise KeyError(f"Playlist {playlist_id} is not in this library.")
@@ -289,6 +295,10 @@ def merge_playlist_scan(
 	effective_name = str(playlist.get("name") or name or "Spotify Playlist").strip() if playlist.get("custom_name") else str(name or playlist.get("name") or "Spotify Playlist").strip()
 	merged: list[dict] = []
 	seen: set[str] = set()
+	used_old: set[int] = set()
+	old_by_text: dict[str, list[dict]] = {}
+	for candidate in playlist.get("tracks", []):
+		old_by_text.setdefault(_track_text_key(candidate), []).append(candidate)
 	new_occurrences: dict[str, int] = {}
 	for position, raw in enumerate(tracks, start=1):
 		track = _normalized_track(raw, effective_name, position)
@@ -302,10 +312,11 @@ def merge_playlist_scan(
 		seen.add(key)
 		old = previous.get(key, {})
 		if not old:
-			text_key = _track_text_key(track)
-			matching_old = [candidate for candidate in playlist.get("tracks", []) if _track_text_key(candidate) == text_key]
+			matching_old = old_by_text.get(_track_text_key(track), [])
 			if len(matching_old) == 1:
 				old = matching_old[0]
+		if old:
+			used_old.add(id(old))
 		if old.get("custom_title"):
 			track["title"] = old.get("title") or track["title"]
 			track["custom_title"] = True
@@ -346,7 +357,16 @@ def merge_playlist_scan(
 		for field in _SKIP_FIELDS:
 			track[field] = old.get(field) or None
 		merged.append(track)
-	removed = [old for key, old in previous.items() if key not in seen]
+	old_positions = {id(old): index for index, old in enumerate(playlist.get("tracks", []))}
+	unseen = [old for key, old in previous.items() if key not in seen]
+	kept: list[dict] = []
+	if not complete:
+		leftovers = [old for old in unseen if id(old) not in used_old]
+		for old in sorted(leftovers, key=lambda item: old_positions.get(id(item), 0)):
+			old["playlist"] = effective_name
+			merged.insert(min(old_positions.get(id(old), len(merged)), len(merged)), old)
+			kept.append(old)
+	removed = [] if not complete else unseen
 	playlist.update({
 		"name": effective_name,
 		"last_scanned_at": _now(),
@@ -359,7 +379,8 @@ def merge_playlist_scan(
 		"last_diff": {
 			"added": sum(1 for track in merged if _track_key(track) not in previous),
 			"removed": len(removed),
-			"unchanged": sum(1 for track in merged if _track_key(track) in previous),
+			"unchanged": sum(1 for track in merged if _track_key(track) in previous) - len(kept),
+			**({"kept_from_incomplete_scan": len(kept)} if kept else {}),
 		},
 	})
 	return playlist

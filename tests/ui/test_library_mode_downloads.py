@@ -161,6 +161,38 @@ def test_unreadable_library_is_copied_and_never_overwritten(monkeypatch, tmp_pat
 		QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
+class _RunningScraper:
+	"""Stands in for the Spotify reader: _finish reports the partial result synchronously, like the real one."""
+
+	def __init__(self, dialog, playlist_id: str):
+		self.running = True
+		self.dialog = dialog
+		self.playlist_id = playlist_id
+
+	def _finish(self, message: str) -> None:
+		self.running = False
+		self.dialog._scan_finished({
+			"id": self.playlist_id, "name": "Big", "tracks": [{"id": "sp0", "title": "Song 0", "artists": "Artist"}],
+			"reported_total": 30, "complete": False, "message": message,
+		})
+
+	def hide(self) -> None:
+		pass
+
+
+def test_closing_during_a_scan_does_not_merge_the_partial_result(library_dialog):
+	dialog, path, output = library_dialog
+	dialog.scraper = _RunningScraper(dialog, "big")
+	dialog.scan_queue = [dict(dialog.library["playlists"][0])]
+
+	dialog.closeEvent(QCloseEvent())
+
+	dialog.scraper = None
+	assert dialog.scan_cancelled
+	assert dialog.scan_queue == []
+	assert len(load_library(path)["playlists"][0]["tracks"]) == 30
+
+
 def test_scan_cannot_start_while_a_download_runs(library_dialog, monkeypatch):
 	dialog, path, output = library_dialog
 	messages: list[str] = []

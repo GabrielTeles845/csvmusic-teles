@@ -91,6 +91,33 @@ def test_library_of_another_version_raises_clear_error_and_backup_keeps_original
 	assert backup_library_file(path) != backup
 
 
+def _songs(*ids: str) -> list[dict]:
+	return [{"id": song_id, "title": f"Song {song_id}", "artists": "Artist"} for song_id in ids]
+
+
+def test_incomplete_scan_keeps_songs_that_fell_in_holes_at_their_place():
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a", "b", "c", "d", "e"))
+	library["playlists"][0]["tracks"][2]["preferred_video_id"] = "chosen"
+
+	playlist = merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a", "b", "e"), reported_total=5, complete=False)
+
+	assert [track["sp_id"] for track in playlist["tracks"]] == ["a", "b", "c", "d", "e"]
+	assert playlist["tracks"][2]["preferred_video_id"] == "chosen"
+	assert playlist["last_diff"]["removed"] == 0
+	assert playlist["last_diff"]["kept_from_incomplete_scan"] == 2
+
+
+def test_complete_scan_still_removes_songs_gone_from_the_source():
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a", "b", "c"))
+
+	playlist = merge_playlist_scan(library, PLAYLIST_ID, "Playlist", _songs("a", "c"), reported_total=2, complete=True)
+
+	assert [track["sp_id"] for track in playlist["tracks"]] == ["a", "c"]
+	assert playlist["last_diff"]["removed"] == 1
+
+
 def test_skip_is_recorded_with_reason_and_date_and_survives_rescan():
 	from csvmusic.core.library import SKIP_NOT_FOUND_ON_YOUTUBE, apply_library_download_result, describe_skip, enabled_tracks
 	library = _library_with_playlist()

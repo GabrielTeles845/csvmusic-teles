@@ -2406,7 +2406,9 @@ class LibraryModeDialog(QDialog):
 					lines.append(
 						f"{'✓' if not result.get('warning') else '⚠'} {result['name']}\n"
 						f"  Tracks: {captured}/{reported}  •  Added: {diff.get('added', 0)}  •  "
-						f"Removed: {diff.get('removed', 0)}  •  Unchanged: {diff.get('unchanged', 0)}\n"
+						f"Removed: {diff.get('removed', 0)}  •  Unchanged: {diff.get('unchanged', 0)}"
+						+ (f"  •  Kept (not read this time): {diff['kept_from_incomplete_scan']}" if diff.get("kept_from_incomplete_scan") else "")
+						+ "\n"
 						f"  Downloaded: {result.get('downloaded', 0)}  •  Missing: {result.get('missing', 0)}"
 						+ (f"\n  Warning: {result['warning']}" if result.get("warning") else "")
 					)
@@ -2506,6 +2508,7 @@ class LibraryModeDialog(QDialog):
 				reported_total=data.get("reported_total"),
 				warning=warning,
 				cover_url=data.get("cover_url"),
+				complete=bool(data.get("complete")),
 			)
 			self._save()
 			playlist_key = f"{merged.get('platform') or 'spotify'}:{merged.get('id')}"
@@ -2516,7 +2519,7 @@ class LibraryModeDialog(QDialog):
 			).get("playlists", {}).get(playlist_key, {})
 			self.scan_results.append({
 				"name": str(merged.get("name") or data.get("name") or playlist_id),
-				"captured": len(merged.get("tracks") or []),
+				"captured": len(merged.get("tracks") or []) - int((merged.get("last_diff") or {}).get("kept_from_incomplete_scan", 0) or 0),
 				"reported": data.get("reported_total"),
 				"diff": dict(merged.get("last_diff") or {}),
 				"downloaded": int(counts.get("downloaded", 0) or 0),
@@ -3847,6 +3850,9 @@ class LibraryModeDialog(QDialog):
 			event.ignore()
 			return
 		if self.scraper and self.scraper.running:
+			# Mark the scan cancelled first: _finish reports the partial result right away, and it must not be merged.
+			self.scan_cancelled = True
+			self.scan_queue.clear()
 			self.scraper._finish("Library scan cancelled because Library Mode was closed.")
 		if self.scan_dialog:
 			self.scan_dialog.close()
