@@ -212,7 +212,7 @@ def rename_library_playlist(
 		old_folder = root / old_safe
 		new_folder = root / new_safe
 		if old_folder.exists() and old_folder.is_dir():
-			if old_folder != new_folder and new_folder.exists():
+			if old_folder != new_folder and new_folder.exists() and not _same_entry(old_folder, new_folder):
 				raise FileExistsError(f"The destination folder already exists: {new_folder}")
 			m3u_moves: list[tuple[pathlib.Path, pathlib.Path]] = []
 			m3u_unchanged: list[pathlib.Path] = []
@@ -220,20 +220,20 @@ def rename_library_playlist(
 				source = old_folder / f"{old_safe}{suffix}"
 				destination = old_folder / f"{new_safe}{suffix}"
 				if source.exists() and source != destination:
-					if destination.exists():
+					if destination.exists() and not _same_entry(source, destination):
 						raise FileExistsError(f"The destination playlist file already exists: {destination}")
 					m3u_moves.append((source, destination))
 				elif source.exists():
 					m3u_unchanged.append(source)
 			if old_folder != new_folder:
-				old_folder.rename(new_folder)
+				_rename_entry(old_folder, new_folder)
 				renamed_folder = new_folder
 			else:
 				renamed_folder = old_folder
 			for old_file, old_destination in m3u_moves:
 				source = renamed_folder / old_file.name
 				destination = renamed_folder / old_destination.name
-				source.rename(destination)
+				_rename_entry(source, destination)
 				_update_m3u_playlist_name(destination, clean_name)
 			for old_file in m3u_unchanged:
 				_update_m3u_playlist_name(renamed_folder / old_file.name, clean_name)
@@ -243,6 +243,24 @@ def rename_library_playlist(
 	for track in playlist.get("tracks", []):
 		track["playlist"] = clean_name
 	return playlist, renamed_folder
+
+
+def _same_entry(first: pathlib.Path, second: pathlib.Path) -> bool:
+	"""True when two names reach the same file or folder (APFS ignores letter case: "rock" is "Rock")."""
+	try:
+		return os.path.samefile(first, second)
+	except OSError:
+		return False
+
+
+def _rename_entry(source: pathlib.Path, destination: pathlib.Path) -> None:
+	"""Rename, also when only the letter case changes on a case-insensitive disk (via a temporary name)."""
+	if source != destination and _same_entry(source, destination):
+		temporary = source.with_name(f".{source.name}.renaming-{os.getpid()}")
+		source.rename(temporary)
+		temporary.rename(destination)
+		return
+	source.rename(destination)
 
 
 def edit_library_track(library: dict, playlist_id: str, track_index: int, title: str, album: str) -> dict:

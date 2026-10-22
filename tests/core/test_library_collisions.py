@@ -124,6 +124,23 @@ def test_numbered_name_stays_put_on_rescan():
 	assert library["playlists"][0]["name"] == "Favoritas (2)"
 
 
+def test_rename_that_only_changes_letter_case_moves_folder_and_m3u(tmp_path):
+	library = _two_favoritas()
+	library["playlists"].pop()
+	L.merge_playlist_scan(library, _FIRST, "favoritas", [{"title": "Um", "artists": "A"}])
+	folder = tmp_path / "favoritas"
+	folder.mkdir()
+	(folder / "A - Um.m4a").write_bytes(b"x")
+	(folder / "favoritas.m3u8").write_text("#EXTM3U\n#EXTPLAYLIST:favoritas\nA - Um.m4a\n", encoding="utf-8")
+
+	_playlist, renamed = L.rename_library_playlist(library, _FIRST, "Favoritas", tmp_path)
+
+	assert renamed is not None and renamed.name == "Favoritas"
+	assert sorted(path.name for path in tmp_path.iterdir()) == ["Favoritas"]
+	assert sorted(path.name for path in (tmp_path / "Favoritas").iterdir()) == ["A - Um.m4a", "Favoritas.m3u8"]
+	assert "#EXTPLAYLIST:Favoritas" in (tmp_path / "Favoritas" / "Favoritas.m3u8").read_text(encoding="utf-8")
+
+
 def test_names_that_only_match_after_sanitizing_also_collide():
 	library = _two_favoritas()
 	L.merge_playlist_scan(library, _FIRST, "Rock: 80s", [{"title": "Um", "artists": "A"}])
