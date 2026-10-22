@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from csvmusic.core.spotify_import import parse_spotify_source
-from csvmusic.core.downloader import sanitize_name
+from csvmusic.core.downloader import sanitize_name, write_m3u
 from csvmusic.core.track_output import expected_track_path, library_format
 from csvmusic.core.youtube_music_import import parse_youtube_music_source
 from csvmusic.core.apple_music_import import parse_apple_music_source_url
@@ -587,6 +587,35 @@ def library_status(
 			totals[field] += status[field]
 	# track_counts lets the UI move one song between counts without recounting the playlist.
 	return {"totals": totals, "playlists": by_playlist, "track_counts": track_counts}
+
+
+def write_library_m3us(
+	manifest_tracks: list[dict],
+	output_dir: str | pathlib.Path,
+	fmt: str,
+	*,
+	write_m3u8: bool = True,
+	write_m3u_plain: bool = False,
+	m3u_output_dir: str | pathlib.Path | None = None,
+	playlist_names: set[str] | None = None,
+) -> list[pathlib.Path]:
+	"""Write each playlist's M3U with the songs whose file already exists (used during a download, not only at the end)."""
+	root = pathlib.Path(output_dir)
+	by_playlist: dict[str, list[dict]] = {}
+	for track in manifest_tracks:
+		name = str(track.get("playlist") or "Playlist")
+		if playlist_names is not None and name not in playlist_names:
+			continue
+		if expected_track_path(track, root, fmt).exists():
+			by_playlist.setdefault(name, []).append(track)
+	written: list[pathlib.Path] = []
+	output_for_lists = pathlib.Path(m3u_output_dir) if m3u_output_dir else None
+	for name, tracks in by_playlist.items():
+		if write_m3u8:
+			written.append(write_m3u(root, name, tracks, fmt, suffix=".m3u8", encoding="utf-8", playlist_output_dir=output_for_lists))
+		if write_m3u_plain:
+			written.append(write_m3u(root, name, tracks, fmt, suffix=".m3u", encoding="utf-8-sig", playlist_output_dir=output_for_lists))
+	return written
 
 
 def export_csv(path: str | pathlib.Path, library: dict, playlist_ids: set[str] | None = None) -> None:

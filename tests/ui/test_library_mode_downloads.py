@@ -32,16 +32,30 @@ def _make_library(home: pathlib.Path, count: int) -> tuple[pathlib.Path, pathlib
 	return path, output
 
 
+class _QuietLibraryDialog(library_mode.LibraryModeDialog):
+	"""No startup disclaimer, YouTube check or update check.
+
+	Overridden in a subclass on purpose: monkeypatching these onto the class with lambdas made Python crash
+	at shutdown, because PySide keeps a pointer to methods used in QTimer.singleShot after the patch is undone.
+	"""
+
+	def _show_startup_disclaimer(self) -> None:
+		pass
+
+	def _check_youtube_at_startup(self) -> None:
+		pass
+
+	def _start_update_check(self) -> None:
+		pass
+
+
 @pytest.fixture
 def library_dialog(monkeypatch, tmp_path):
 	# Point the app data folder at tmp_path. Changing the home variable here breaks later QtWebEngine tests.
 	monkeypatch.setattr(library_mode, "settings_path", lambda: tmp_path / "data" / "settings.json")
 	monkeypatch.setattr(library_mode, "load_settings", lambda: {"hide_startup_disclaimer": True})
-	monkeypatch.setattr(library_mode.LibraryModeDialog, "_show_startup_disclaimer", lambda self: None)
-	monkeypatch.setattr(library_mode.LibraryModeDialog, "_check_youtube_at_startup", lambda self: None)
-	monkeypatch.setattr(library_mode.LibraryModeDialog, "_start_update_check", lambda self: None)
 	path, output = _make_library(tmp_path, 30)
-	dialog = library_mode.LibraryModeDialog()
+	dialog = _QuietLibraryDialog()
 	yield dialog, path, output
 	dialog.library_save_timer.stop()
 	dialog.deleteLater()
@@ -104,6 +118,22 @@ def test_close_writes_pending_results(library_dialog):
 	# Call the handler directly: close() on the last window would ask the shared test QApplication to quit.
 	dialog.closeEvent(QCloseEvent())
 	assert load_library(path)["playlists"][0]["tracks"][2]["last_downloaded_at"]
+
+
+def test_m3u_is_written_during_the_batch_not_only_at_the_end(library_dialog):
+	dialog, path, output = library_dialog
+	dialog.download_m3u_tracks = enabled_tracks(dialog.library, {"spotify:big"})
+	dialog.download_row_targets = {row: ("spotify:big", row) for row in range(30)}
+	m3u = output / "Big" / "Big.m3u8"
+	for row in range(library_mode.M3U_WRITE_EVERY_TRACKS - 1):
+		dialog._download_track_result(row, _downloaded_payload(dialog, output, row))
+	assert not m3u.exists()
+
+	last = library_mode.M3U_WRITE_EVERY_TRACKS - 1
+	dialog._download_track_result(last, _downloaded_payload(dialog, output, last))
+
+	entries = [line for line in m3u.read_text(encoding="utf-8").splitlines() if line.endswith(".m4a")]
+	assert len(entries) == library_mode.M3U_WRITE_EVERY_TRACKS
 
 
 def test_library_selector_offers_opus_and_counts_use_library_format(library_dialog):

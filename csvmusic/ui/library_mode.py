@@ -20,7 +20,7 @@ from csvmusic.core.library import (
 	add_playlist_urls, adjust_status_counts, apply_library_download_result, describe_skip, edit_library_track, enabled_tracks, export_csv,
 	find_library_track, library_status, library_track_path, load_library,
 	import_csv_playlist, mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id,
-	rename_library_playlist, save_library, track_status_counts,
+	rename_library_playlist, save_library, track_status_counts, write_library_m3us,
 )
 from csvmusic.core.log import log
 from csvmusic.core.audio_quality import audio_quality
@@ -43,6 +43,8 @@ from csvmusic.version import APP_VERSION
 
 # Grouped write of library.json during downloads (it is always written when the batch ends and on close).
 LIBRARY_SAVE_DELAY_MS = 3000
+# During a batch the playlist M3U is rewritten after this many downloaded songs (bug: it was only written at the end).
+M3U_WRITE_EVERY_TRACKS = 10
 
 
 def _audio_processing_settings(cfg: dict) -> dict:
@@ -1474,6 +1476,9 @@ class LibraryModeDialog(QDialog):
 		self.library_save_timer.setInterval(LIBRARY_SAVE_DELAY_MS)
 		self.library_save_timer.timeout.connect(self._flush_library)
 		self.download_track_states: dict[tuple[str, int], str] = {}
+		self.download_m3u_tracks: list[dict] = []
+		self.download_m3u_pending: set[str] = set()
+		self.download_m3u_count = 0
 		self.download_row_targets: dict[int, tuple[str, int]] = {}
 		self.download_log_dialog = DownloadLogDialog(self)
 		self.header_font_family = self._load_header_font()
@@ -3563,6 +3568,9 @@ class LibraryModeDialog(QDialog):
 			row: (str(track.get("library_playlist_id") or ""), int(track.get("library_track_index", -1)))
 			for row, track in enumerate(tracks)
 		}
+		self.download_m3u_tracks = all_playlist_tracks
+		self.download_m3u_pending = set()
+		self.download_m3u_count = 0
 		self.download_track_states = {target: "Queued" for target in self.download_row_targets.values()}
 		self.download_log_dialog.begin_run(target_text, len(tracks))
 		self.download_log_dialog.append("note", f"Format: {fmt.upper()} | Output: {output}")
@@ -3664,6 +3672,31 @@ class LibraryModeDialog(QDialog):
 			)
 		if track.get("library_playlist_id") and (payload.get("downloaded") or payload.get("error") or payload.get("skipped")):
 			self._apply_download_payload(str(track["library_playlist_id"]), track, payload, self.download_row_targets.get(row))
+		if payload.get("downloaded"):
+			self.download_m3u_pending.add(str(payload.get("playlist_name") or track.get("playlist") or "Playlist"))
+			self.download_m3u_count += 1
+			if self.download_m3u_count >= M3U_WRITE_EVERY_TRACKS:
+				self._write_partial_m3us()
+
+	def _write_partial_m3us(self) -> None:
+		"""Keep the playlist file usable during a long batch; the worker still writes the final one."""
+		names = set(self.download_m3u_pending)
+		self.download_m3u_pending.clear()
+		self.download_m3u_count = 0
+		if not names or not self.download_m3u_tracks:
+			return
+		cfg = load_settings()
+		try:
+			written = write_library_m3us(
+				self.download_m3u_tracks, self.library.get("output_dir") or "", library_format(self.library),
+				write_m3u8=bool(cfg.get("write_m3u8", True)), write_m3u_plain=bool(cfg.get("write_m3u_plain", False)),
+				m3u_output_dir=cfg.get("m3u_output_dir") or None, playlist_names=names,
+			)
+		except OSError as exc:
+			log(f"library partial m3u failed playlists={sorted(names)} error={exc}")
+			return
+		for path in written:
+			self.download_log_dialog.append("note", f"[m3u] updated: {path}")
 
 	def _apply_download_payload(self, playlist_id: str, track: dict, payload: dict, target: tuple[str, int] | None) -> None:
 		"""Record one result in memory, then redraw only that song row and that playlist's counts."""
@@ -3734,6 +3767,9 @@ class LibraryModeDialog(QDialog):
 		self.download_worker = None
 		self.download_row_targets.clear()
 		self.download_track_states.clear()
+		self.download_m3u_tracks = []
+		self.download_m3u_pending.clear()
+		self.download_m3u_count = 0
 		self._flush_library()
 		self._refresh()
 
