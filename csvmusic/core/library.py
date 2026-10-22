@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from csvmusic.core.spotify_import import parse_spotify_source
 from csvmusic.core.downloader import sanitize_name
-from csvmusic.core.track_output import expected_track_path
+from csvmusic.core.track_output import expected_track_path, library_format
 from csvmusic.core.youtube_music_import import parse_youtube_music_source
 from csvmusic.core.apple_music_import import parse_apple_music_source_url
 from csvmusic.core.deezer_import import parse_deezer_source
@@ -313,7 +313,7 @@ def merge_playlist_scan(
 		if not old_downloaded_path and old:
 			old_probe = dict(old)
 			old_probe["playlist"] = str(playlist.get("name") or effective_name or "Playlist")
-			candidate = library_track_path(old_probe, pathlib.Path(library.get("output_dir") or ""), str(library.get("format") or "mp3"))
+			candidate = library_track_path(old_probe, pathlib.Path(library.get("output_dir") or ""), library_format(library))
 			if candidate.is_file():
 				old_downloaded_path = str(candidate)
 		track["downloaded_path"] = old_downloaded_path or None
@@ -467,7 +467,7 @@ def apply_library_download_result(
 		probe = dict(track)
 		probe["playlist"] = playlist.get("name") or "Playlist"
 		downloaded_file = expected_track_path(
-			probe, pathlib.Path(library.get("output_dir") or ""), str(library.get("format") or "mp3"),
+			probe, pathlib.Path(library.get("output_dir") or ""), library_format(library),
 		)
 		if downloaded_file.is_file():
 			old_downloaded = str(stored.get("downloaded_path") or "").strip()

@@ -6,7 +6,7 @@ import sys
 
 from mutagen import File as MutagenFile
 
-from csvmusic.core.track_output import expected_track_path
+from csvmusic.core.track_output import expected_track_path, library_format
 
 
 def _field(value: object) -> str:
@@ -37,7 +37,7 @@ def emit_manifest(library_path: pathlib.Path, playlist_name: str) -> int:
 	if not playlist:
 		raise ValueError(f"Playlist not found: {playlist_name}")
 	root = pathlib.Path(library.get("output_dir") or "")
-	fmt = str(library.get("format") or "mp3")
+	fmt = library_format(library)
 	count = 0
 	for index, track in enumerate(playlist.get("tracks", []), start=1):
 		path = expected_track_path(track, root, fmt)

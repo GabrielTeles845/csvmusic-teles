@@ -51,6 +51,29 @@ def test_rescan_with_new_duration_replaces_previous_one():
 	assert track["duration_source"] == "spotify"
 
 
+def test_library_format_has_one_default_and_accepts_opus():
+	from csvmusic.core.track_output import library_format
+	assert library_format({}) == "m4a"
+	assert library_format({"format": "OPUS"}) == "opus"
+	assert library_format({"format": "wav"}) == "m4a"
+
+
+def test_rescan_finds_existing_m4a_when_library_has_no_saved_format(tmp_path):
+	from csvmusic.core.track_output import expected_track_path
+	library = new_library(output_dir=str(tmp_path))
+	add_playlist_urls(library, [URL])
+	merge_playlist_scan(library, PLAYLIST_ID, "Mix", [{"id": "one", "title": "Song", "artists": "Artist"}])
+	stored = dict(library["playlists"][0]["tracks"][0], playlist="Mix")
+	audio = expected_track_path(stored, tmp_path, "m4a")
+	audio.parent.mkdir(parents=True)
+	audio.write_bytes(b"audio")
+
+	merge_playlist_scan(library, PLAYLIST_ID, "Mix", [{"id": "one", "title": "Song", "artists": "Artist"}])
+
+	# Library Mode downloads m4a by default; the rescan used to look for an .mp3 instead.
+	assert library["playlists"][0]["tracks"][0]["downloaded_path"] == str(audio)
+
+
 def test_skip_is_recorded_with_reason_and_date_and_survives_rescan():
 	from csvmusic.core.library import SKIP_NOT_FOUND_ON_YOUTUBE, apply_library_download_result, describe_skip, enabled_tracks
 	library = _library_with_playlist()

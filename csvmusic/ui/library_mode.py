@@ -27,7 +27,7 @@ from csvmusic.core.audio_quality import audio_quality
 from csvmusic.core.settings import load_settings, save_settings, settings_path
 from csvmusic.core.paths import ffmpeg_path, resource_base
 from csvmusic.core.preflight import ffmpeg_supports_mp3
-from csvmusic.core.track_output import expected_track_path
+from csvmusic.core.track_output import SUPPORTED_FORMATS, expected_track_path, library_format
 from csvmusic.core.downloader import sanitize_name, tag_file, write_m3u, youtube_batch_mitigation, youtube_risk_acknowledgement
 from csvmusic.core.youtube_url import YouTubeVideoUrlError, parse_youtube_video_id
 from csvmusic.ui.spotify_public_scrape import SpotifyPublicScrapeDialog
@@ -721,8 +721,8 @@ class LibrarySettingsDialog(QDialog):
 		format_row = QHBoxLayout()
 		format_row.addWidget(QLabel("Audio format"))
 		self.format = QComboBox()
-		self.format.addItems(["m4a", "mp3", "opus"])
-		self.format.setCurrentText(str(library.get("format") or "m4a"))
+		self.format.addItems(list(SUPPORTED_FORMATS))
+		self.format.setCurrentText(library_format(library))
 		format_row.addWidget(self.format)
 		format_row.addStretch(1)
 		audio_layout.addLayout(format_row)
@@ -1774,10 +1774,11 @@ class LibraryModeDialog(QDialog):
 		choose_output = QPushButton("Choose Output...")
 		choose_output.clicked.connect(self._choose_output)
 		self.format_combo = QComboBox()
-		self.format_combo.addItems(["m4a", "mp3"])
-		self.format_combo.setCurrentText(str(self.library.get("format") or "m4a"))
-		self.format_combo.currentTextChanged.connect(self._refresh)
+		self.format_combo.addItems(list(SUPPORTED_FORMATS))
+		self.format_combo.setCurrentText(library_format(self.library))
+		# Save the format first: every count reads it from the library, not from this hidden selector.
 		self.format_combo.currentTextChanged.connect(self._format_changed)
+		self.format_combo.currentTextChanged.connect(self._refresh)
 		output_row.addWidget(QLabel("Output:"))
 		output_row.addWidget(self.output_label, 1)
 		output_row.addWidget(choose_output)
@@ -2151,7 +2152,7 @@ class LibraryModeDialog(QDialog):
 		accepted = bool(LibrarySettingsDialog(self.library, self, download_confirmation=download_confirmation).exec())
 		if accepted:
 			self.output_label.setText(self.library.get("output_dir") or "No output folder selected")
-			self.format_combo.setCurrentText(str(self.library.get("format") or "m4a"))
+			self.format_combo.setCurrentText(library_format(self.library))
 			self._save()
 			self._update_download_target()
 			self.status.setText("Library download settings saved.")
@@ -2200,7 +2201,7 @@ class LibraryModeDialog(QDialog):
 			return
 		self.library_path = pathlib.Path(path)
 		self.output_label.setText(self.library.get("output_dir") or "No output folder selected")
-		self.format_combo.setCurrentText(str(self.library.get("format") or "m4a"))
+		self.format_combo.setCurrentText(library_format(self.library))
 		self._refresh()
 
 	def _save_as(self) -> None:
@@ -2473,7 +2474,7 @@ class LibraryModeDialog(QDialog):
 			counts = library_status(
 				self.library,
 				self.library.get("output_dir") or "",
-				self.format_combo.currentText(),
+				library_format(self.library),
 			).get("playlists", {}).get(playlist_key, {})
 			self.scan_results.append({
 				"name": str(merged.get("name") or data.get("name") or playlist_id),
@@ -2627,7 +2628,7 @@ class LibraryModeDialog(QDialog):
 						entry = dict(source_track)
 						entry["playlist"] = updated["name"]
 						playlist_tracks.append(entry)
-				fmt = str(self.library.get("format") or "m4a")
+				fmt = library_format(self.library)
 				for suffix, setting, encoding in ((".m3u8", "write_m3u8", "utf-8"), (".m3u", "write_m3u_plain", "utf-8-sig")):
 					old_file = playlist_output_dir / f"{sanitize_name(old_name)}{suffix}"
 					if old_file.exists():
@@ -2674,7 +2675,7 @@ class LibraryModeDialog(QDialog):
 
 	def _refresh(self, *_args) -> None:
 		output = self.library.get("output_dir") or ""
-		status = library_status(self.library, output, self.format_combo.currentText()) if hasattr(self, "format_combo") else {"playlists": {}, "totals": {}}
+		status = library_status(self.library, output, library_format(self.library))
 		self.library_status_cache = status
 		selected = self._selected_ids() if hasattr(self, "playlist_tree") else set()
 		self.playlist_tree.clear()
@@ -2879,7 +2880,7 @@ class LibraryModeDialog(QDialog):
 		self.track_cards.clear()
 		self.track_items.clear()
 		output = pathlib.Path(self.library.get("output_dir") or "")
-		fmt = self.format_combo.currentText()
+		fmt = library_format(self.library)
 		# One folder listing per playlist instead of one per missing song.
 		listing_cache: dict = {}
 		total_tracks = 0
@@ -3154,7 +3155,7 @@ class LibraryModeDialog(QDialog):
 			return
 		scroll_position = self.track_tree.verticalScrollBar().value()
 		output_root = pathlib.Path(self.library.get("output_dir") or "")
-		fmt = str(self.library.get("format") or self.format_combo.currentText() or "m4a")
+		fmt = library_format(self.library)
 		old_file_track = dict(track)
 		old_file_track["playlist"] = playlist.get("name") or "Playlist"
 		old_path = expected_track_path(old_file_track, output_root, fmt)
@@ -3278,7 +3279,7 @@ class LibraryModeDialog(QDialog):
 			"mp3_mode": cfg.get("legacy_mp3_mode") or "vbr",
 			"cover_art_mode": cfg.get("legacy_cover_art_mode") or "standard",
 		}
-		fmt = str(self.library.get("format") or "m4a")
+		fmt = library_format(self.library)
 		target = (playlist_id, index)
 		self.download_track_states[target] = "Downloading"
 		self._show_tracks()
@@ -3475,7 +3476,7 @@ class LibraryModeDialog(QDialog):
 		output = str(self.library.get("output_dir") or "").strip()
 		if not output:
 			return
-		fmt = str(self.library.get("format") or "m4a")
+		fmt = library_format(self.library)
 		if fmt == "mp3":
 			try:
 				mp3_ready = ffmpeg_supports_mp3(ffmpeg_path())
@@ -3672,7 +3673,7 @@ class LibraryModeDialog(QDialog):
 			log(f"library download result has no matching song playlist={playlist_id} title={track.get('title')!r}")
 			return
 		output = self.library.get("output_dir") or ""
-		fmt = self.format_combo.currentText()
+		fmt = library_format(self.library)
 		name = str(playlist.get("name") or "Playlist")
 		apply_library_download_result(
 			self.library, playlist_id, track,
@@ -3707,7 +3708,7 @@ class LibraryModeDialog(QDialog):
 		item.setData(0, Qt.UserRole + 1, str(track.get("cover_url") or ""))
 		card, art = self._build_track_card(
 			playlist, target[0], target[1], track, int(item.data(0, Qt.UserRole + 3) or 0), item,
-			pathlib.Path(self.library.get("output_dir") or ""), self.format_combo.currentText(),
+			pathlib.Path(self.library.get("output_dir") or ""), library_format(self.library),
 		)
 		self.track_tree.setItemWidget(item, 0, card)
 		self.track_art_targets[row] = art
@@ -3753,7 +3754,7 @@ class LibraryModeDialog(QDialog):
 		for track in tracks:
 			track["library_path"] = str(self.library_path)
 		log(f"library handed to downloader tracks={len(tracks)} output={output}")
-		self.tracks_ready.emit(tracks, f"Library: {self.library.get('name') or 'My Library'}", output, self.format_combo.currentText())
+		self.tracks_ready.emit(tracks, f"Library: {self.library.get('name') or 'My Library'}", output, library_format(self.library))
 		self.accept()
 
 	def closeEvent(self, event) -> None:

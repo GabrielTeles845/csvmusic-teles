@@ -106,6 +106,21 @@ def test_close_writes_pending_results(library_dialog):
 	assert load_library(path)["playlists"][0]["tracks"][2]["last_downloaded_at"]
 
 
+def test_library_selector_offers_opus_and_counts_use_library_format(library_dialog):
+	dialog, path, output = library_dialog
+	options = [dialog.format_combo.itemText(index) for index in range(dialog.format_combo.count())]
+	assert options == ["m4a", "mp3", "opus"]
+	track = enabled_tracks(dialog.library, {"spotify:big"})[0]
+	opus_file = expected_track_path(track, output, "opus")
+	opus_file.parent.mkdir(parents=True, exist_ok=True)
+	opus_file.write_bytes(b"")
+
+	dialog.format_combo.setCurrentText("opus")
+
+	assert dialog.library["format"] == "opus"
+	assert dialog.library_status_cache["playlists"]["spotify:big"]["downloaded"] == 1
+
+
 def test_skipped_song_is_saved_and_shown_as_not_found(library_dialog):
 	dialog, path, output = library_dialog
 	dialog.download_row_targets = {3: ("spotify:big", 3)}
