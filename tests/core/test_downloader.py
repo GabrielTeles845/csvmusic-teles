@@ -245,7 +245,7 @@ def test_huge_batch_starts_paced_without_false_throttling_warning(count):
 	assert "started throttling" not in (downloader.youtube_risk_acknowledgement(profile) or "").lower()
 
 
-def _fake_tools(monkeypatch, *, ext="webm", payload=b"new audio"):
+def _fake_tools(monkeypatch, *, ext="webm", payload=b"new audio", codec="aac"):
 	"""Simulate yt-dlp (writes the -o target) and ffmpeg (copies input to output)."""
 	import shutil
 	import subprocess
@@ -259,8 +259,12 @@ def _fake_tools(monkeypatch, *, ext="webm", payload=b"new audio"):
 
 	def fake_capture(cmd, **_kwargs):
 		calls["ffmpeg"].append(cmd)
-		if "-i" in cmd and not cmd[-1].startswith("-"):
-			shutil.copyfile(cmd[cmd.index("-i") + 1], cmd[-1])
+		source = cmd[cmd.index("-i") + 1] if "-i" in cmd else None
+		if source and cmd[-1] == source:
+			# ffmpeg -i <arquivo> sem saída: só descreve as faixas.
+			return subprocess.CompletedProcess(cmd, 1, "", f"Stream #0:0: Audio: {codec}, 48000 Hz, stereo")
+		if source and not cmd[-1].startswith("-"):
+			shutil.copyfile(source, cmd[-1])
 		return subprocess.CompletedProcess(cmd, 0, "", "")
 
 	monkeypatch.setattr(downloader, "_run_ytdlp_module", fake_ytdlp)
@@ -362,3 +366,16 @@ def test_failed_finishing_step_never_leaves_a_file_in_the_playlist_folder(monkey
 
 	assert previous.read_bytes() == b"old audio"
 	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.m4a"]
+
+
+@pytest.mark.parametrize("codec, expect_copy", [("opus", False), ("vorbis", False), ("aac", True)])
+def test_m4a_only_copies_streams_apple_devices_can_play(monkeypatch, tmp_path, codec, expect_copy):
+	calls = _fake_tools(monkeypatch, codec=codec)
+
+	result = downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert result == tmp_path / "Artist - Song.m4a"
+	writes = [cmd for cmd in calls["ffmpeg"] if cmd[-1].endswith(".normalized.m4a")]
+	assert len(writes) == 1
+	encoder = writes[0][writes[0].index("-c:a") + 1]
+	assert encoder == ("copy" if expect_copy else "aac")

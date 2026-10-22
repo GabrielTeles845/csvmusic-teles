@@ -249,7 +249,7 @@ def test_skipped_tracks_do_not_wait_between_tracks(monkeypatch, tmp_path):
 	assert sleeps == []
 
 
-def _fake_download_tools(monkeypatch, *, payload=b"new audio"):
+def _fake_download_tools(monkeypatch, *, payload=b"new audio", codec="aac"):
 	"""Real downloader functions with simulated yt-dlp and ffmpeg (no network)."""
 	import shutil
 	import subprocess
@@ -261,8 +261,12 @@ def _fake_download_tools(monkeypatch, *, payload=b"new audio"):
 		return 0, "", ""
 
 	def fake_capture(cmd, **_kwargs):
-		if "-i" in cmd and not cmd[-1].startswith("-"):
-			shutil.copyfile(cmd[cmd.index("-i") + 1], cmd[-1])
+		source = cmd[cmd.index("-i") + 1] if "-i" in cmd else None
+		if source and cmd[-1] == source:
+			# ffmpeg -i <arquivo> sem saída: só descreve as faixas.
+			return subprocess.CompletedProcess(cmd, 1, "", f"Stream #0:0: Audio: {codec}, 48000 Hz, stereo")
+		if source and not cmd[-1].startswith("-"):
+			shutil.copyfile(source, cmd[-1])
 		return subprocess.CompletedProcess(cmd, 0, "", "")
 
 	monkeypatch.setattr(downloader, "_run_ytdlp_module", fake_ytdlp)

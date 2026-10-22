@@ -560,6 +560,17 @@ def _append_audio_filter(args: list[str], audio_processing: Dict | None, src: pa
 		args += ["-af", filter_chain]
 
 
+# Codecs que o app Música, o iPhone e o iPod tocam dentro de um .m4a.
+_M4A_COPY_CODECS = {"aac", "alac"}
+
+
+def _probe_audio_codec(src: pathlib.Path, ffmpeg_bin: str) -> str | None:
+	"""Read the first audio codec name from ``ffmpeg -i`` (no ffprobe needed)."""
+	proc = _run_capture([ffmpeg_bin, "-hide_banner", "-i", str(src)])
+	match = re.search(r"Audio:\s*([A-Za-z0-9_]+)", f"{proc.stderr or ''}\n{proc.stdout or ''}")
+	return match.group(1).lower() if match else None
+
+
 def _normalize_to_m4a(src: pathlib.Path, dst: pathlib.Path, ffmpeg_bin: str, video_id: str, audio_processing: Dict | None = None) -> pathlib.Path:
 	tmp_dst = dst.with_name(dst.stem + ".normalized.m4a")
 	if tmp_dst.exists():
@@ -568,7 +579,11 @@ def _normalize_to_m4a(src: pathlib.Path, dst: pathlib.Path, ffmpeg_bin: str, vid
 		except Exception:
 			pass
 
-	if not _audio_processing_enabled(audio_processing):
+	codec = None if _audio_processing_enabled(audio_processing) else _probe_audio_codec(src, ffmpeg_bin)
+	if codec is not None and codec not in _M4A_COPY_CODECS:
+		# Opus (ou Vorbis) copiado para dentro do .m4a não toca em Apple nem iPod.
+		log(f"download_m4a: source codec {codec} is not AAC, re-encoding video_id={video_id}")
+	if codec in _M4A_COPY_CODECS:
 		proc = _run_capture([ffmpeg_bin, "-y", "-i", str(src), "-vn", "-sn", "-c:a", "copy", str(tmp_dst)])
 		rc = proc.returncode
 		if rc == 0 and tmp_dst.exists():
