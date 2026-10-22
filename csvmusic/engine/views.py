@@ -143,7 +143,7 @@ def track_view(
 		"artists": str(track.get("artists") or ""),
 		"album": str(track.get("album") or ""),
 		"duration_ms": int(track.get("duration_ms") or 0) or None,
-		"cover_url": track.get("cover_url") or None,
+		"cover_url": sized_cover_url(track.get("cover_url"), "medium"),
 		"enabled": bool(track.get("enabled", True)),
 		"state": state,
 		"detail": track_detail(track, state),
@@ -207,10 +207,28 @@ def matches_query(track: dict, query: str) -> bool:
 	return all(word in haystack for word in query.casefold().split())
 
 
+# Spotify serves one album cover in three sizes; the id only changes in this prefix.
+# The playlist reader saves the 64 px one, which looks blurry in the 200 px mosaic.
+_SPOTIFY_COVER_SIZES = {"small": "ab67616d00004851", "medium": "ab67616d00001e02", "large": "ab67616d0000b273"}
+
+
+def sized_cover_url(url: str | None, size: str) -> str | None:
+	"""Same Spotify album cover in another size (64, 300 or 640 px); other addresses stay as they are."""
+	if not url:
+		return None
+	text = str(url)
+	if "i.scdn.co/image/" not in text:
+		return text
+	for prefix in _SPOTIFY_COVER_SIZES.values():
+		if prefix in text:
+			return text.replace(prefix, _SPOTIFY_COVER_SIZES[size], 1)
+	return text
+
+
 def cover_urls(playlist: dict, limit: int = 4) -> list[str]:
 	seen: list[str] = []
 	for track in playlist.get("tracks", []):
-		url = str(track.get("cover_url") or "").strip()
+		url = sized_cover_url(str(track.get("cover_url") or "").strip(), "medium") or ""
 		if url and url not in seen:
 			seen.append(url)
 			if len(seen) >= limit:

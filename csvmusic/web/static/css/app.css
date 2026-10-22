@@ -150,6 +150,10 @@ main#main.com-topo { background: linear-gradient(180deg, var(--hero-top) 0px, va
 .busca-lista .limpar { border: 0; background: transparent; color: var(--mut); display: flex; padding: 2px; border-radius: 6px; }
 .busca-lista { height: 44px; border-radius: 22px; padding: 0 16px; background: var(--card); border-color: var(--line); }
 .fil-dir .btn.sm.ic { width: 44px; height: 44px; border-radius: 22px; }
+/* A busca ocupa o espaço que sobra na linha dos botões; se quebrar para a linha de baixo,
+   ocupa a linha inteira (nunca fica encostada à direita com um vão do lado). */
+.acoes .fil-dir { flex: 1 1 280px; }
+.acoes .fil-dir .busca-lista { flex: 1; width: auto; }
 .fil-dir .btn.sm.ic .i { width: 18px; height: 18px; }
 
 /* ---------- Lista ---------- */

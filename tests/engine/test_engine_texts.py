@@ -59,3 +59,13 @@ def test_bot_check_tells_to_sign_in():
 	summary, advice = texts.error_summary_pt("YouTube asked for bot verification: YouTube asked for bot verification. Try Firefox cookies or wait and retry.")
 	assert summary == "O YouTube pediu para confirmar que você não é um robô"
 	assert "Conta do YouTube" in advice
+
+
+def test_spotify_covers_are_served_in_a_sharp_size():
+	from csvmusic.engine.views import cover_urls, sized_cover_url
+	small = "https://i.scdn.co/image/ab67616d00004851706ab55cf3e8cb64efb0ccba"
+	assert sized_cover_url(small, "medium") == "https://i.scdn.co/image/ab67616d00001e02706ab55cf3e8cb64efb0ccba"
+	assert sized_cover_url("https://i.scdn.co/image/ab67706f0000000230888e59", "medium") == "https://i.scdn.co/image/ab67706f0000000230888e59"
+	assert sized_cover_url("https://i.ytimg.com/vi/x/hq.jpg", "medium") == "https://i.ytimg.com/vi/x/hq.jpg"
+	playlist = {"tracks": [{"cover_url": small}, {"cover_url": small.replace("00004851", "00001e02")}]}
+	assert cover_urls(playlist) == ["https://i.scdn.co/image/ab67616d00001e02706ab55cf3e8cb64efb0ccba"]
