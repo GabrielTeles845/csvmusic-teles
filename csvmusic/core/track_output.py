@@ -50,6 +50,23 @@ def duplicate_output_rows(tracks: list[dict], out_root: pathlib.Path, fmt: str) 
 	return duplicates
 
 
+def unique_output_rows(tracks: list[dict], out_root: pathlib.Path, fmt: str) -> list[dict]:
+	"""Keep one row per output file, so a song repeated in a playlist is downloaded once.
+
+	Rows that share a file (duplicate_output_rows) collapse into one: the first with a hand-picked video
+	(`preferred_selection_locked`), else the first row. The kept rows stay in their original order.
+	"""
+	duplicates = duplicate_output_rows(tracks, out_root, fmt)
+	groups: dict[int, list[int]] = {}
+	for row in range(len(tracks)):
+		groups.setdefault(duplicates.get(row, row), []).append(row)
+	kept: set[int] = set()
+	for rows in groups.values():
+		locked = [row for row in rows if tracks[row].get("preferred_selection_locked")]
+		kept.add(locked[0] if locked else rows[0])
+	return [track for row, track in enumerate(tracks) if row in kept]
+
+
 @dataclass(frozen=True)
 class TrackOutputPlan:
 	"""Account for every playlist row before a download starts."""

@@ -29,7 +29,7 @@ from csvmusic.core.audio_quality import audio_quality
 from csvmusic.core.settings import load_settings, save_settings, settings_path
 from csvmusic.core.paths import ffmpeg_path, resource_base
 from csvmusic.core.preflight import ffmpeg_supports_mp3
-from csvmusic.core.track_output import SUPPORTED_FORMATS, expected_track_path, library_format
+from csvmusic.core.track_output import SUPPORTED_FORMATS, expected_track_path, library_format, unique_output_rows
 from csvmusic.core.downloader import sanitize_name, tag_file, write_m3u, youtube_batch_mitigation, youtube_risk_acknowledgement
 from csvmusic.core.youtube_url import YouTubeVideoUrlError, parse_youtube_video_id
 from csvmusic.core.manual_match import choice_warnings, describe_video
@@ -77,11 +77,14 @@ def _pending_download_tracks(
 	tracks: list[dict], output_path: pathlib.Path, fmt: str, *, audio_signature: str,
 	audio_enabled: bool, prefix_numbers: bool, missing_only: bool = False,
 ) -> list[dict]:
-	"""Return rows needing work; Download All deliberately means missing files only."""
+	"""Return rows needing work; Download All deliberately means missing files only.
+
+	A song repeated in a playlist shares one file: it is queued once (unique_output_rows).
+	"""
 	listing_cache: dict = {}
 	if missing_only:
-		return [track for track in tracks if not library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=tracks).exists()]
-	return [
+		return unique_output_rows([track for track in tracks if not library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=tracks).exists()], output_path, fmt)
+	return unique_output_rows([
 		track for track in tracks
 		if track.get("force_redownload")
 		or not library_track_path(track, output_path, fmt, listing_cache=listing_cache, playlist_tracks=tracks).exists()
@@ -91,7 +94,7 @@ def _pending_download_tracks(
 			and track["_previous_audio_processing_signature"] != audio_signature
 		)
 		or bool(track.get("_previous_prefix_numbered")) != prefix_numbers
-	]
+	], output_path, fmt)
 
 
 def _playlists_contributing_tracks(playlists: list[dict], tracks: list[dict]) -> list[dict]:
