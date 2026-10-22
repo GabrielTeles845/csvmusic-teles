@@ -1,0 +1,72 @@
+/* Tokens da direção 3, "Capa ambiente" (docs/fork/06 §5).
+   Cores copiadas de referencia-design/d3-dark.html e d3-light.html, conferidas
+   com contraste >= 4,5:1 nos pares de texto. Tokens novos (linha forte,
+   brilho do carregando, véu) seguem a mesma família. */
+
+@font-face { font-family: "Figtree"; font-style: normal; font-weight: 400; font-display: swap; src: url(../fonts/figtree-400.woff2) format("woff2"); }
+@font-face { font-family: "Figtree"; font-style: normal; font-weight: 500; font-display: swap; src: url(../fonts/figtree-500.woff2) format("woff2"); }
+@font-face { font-family: "Figtree"; font-style: normal; font-weight: 600; font-display: swap; src: url(../fonts/figtree-600.woff2) format("woff2"); }
+@font-face { font-family: "Figtree"; font-style: normal; font-weight: 700; font-display: swap; src: url(../fonts/figtree-700.woff2) format("woff2"); }
+@font-face { font-family: "Figtree"; font-style: normal; font-weight: 800; font-display: swap; src: url(../fonts/figtree-800.woff2) format("woff2"); }
+
+/* Claro: padrão. */
+:root {
+	color-scheme: light;
+	--bg: #f3f4f6; --side: #e8eaee; --card: #ffffff; --pill: #e3e6eb; --line: #d6dae1;
+	--line-strong: #b4bcc8;
+	--ink: #161a20; --mut: #545d6b; --mut2: #545d6b; --off: #6b7380;
+	--acc: #f0c03a; --acc-ink: #1c1a10; --acc-txt: #7d5f00;
+	--ok: #1d7f45; --rev: #985200; --err: #c02b2b;
+	--ok-bg: #e3f3e9; --rev-bg: #fbeedc; --err-bg: #fbe5e5;
+	--bar: #ffffff; --odd: rgba(0, 0, 0, .025); --sel: rgba(240, 192, 58, .16);
+	--sh1: #e3e6eb; --sh2: #eef0f3;
+	--veil: rgba(22, 26, 32, .42);
+	--shadow: 0 18px 48px rgba(22, 26, 32, .18);
+	--focus: #7d5f00;
+	/* Topo da playlist: o matiz vem do mosaico (js/tint.js). Sem capa, o dourado da referência. */
+	--tint-h: 47; --tint-s: 52%;
+	--hero-top: hsl(var(--tint-h) var(--tint-s) 78%);
+	--hero-mid: hsl(var(--tint-h) calc(var(--tint-s) * .8) 88%);
+	--hero-ink: #161a20;
+	--hero-mut: hsl(var(--tint-h) 22% 24%);
+}
+
+:root[data-theme="dark"] {
+	color-scheme: dark;
+	--bg: #1c2027; --side: #151820; --card: #232832; --pill: #2a303b; --line: #2f3541;
+	--line-strong: #485162;
+	--ink: #eef0f4; --mut: #9aa3b2; --mut2: #a3acba; --off: #7f8898;
+	--acc: #f0c03a; --acc-ink: #1c1a10; --acc-txt: #f0c03a;
+	--ok: #5cc982; --rev: #f0a640; --err: #ff6b6b;
+	--ok-bg: #1f3329; --rev-bg: #3a2f1e; --err-bg: #3b2226;
+	--bar: #11141a; --odd: rgba(255, 255, 255, .025); --sel: rgba(240, 192, 58, .12);
+	--sh1: #2a303b; --sh2: #333a47;
+	--veil: rgba(5, 7, 10, .62);
+	--shadow: 0 18px 48px rgba(0, 0, 0, .5);
+	--focus: #f0c03a;
+	--hero-top: hsl(var(--tint-h) var(--tint-s) 28%);
+	--hero-mid: hsl(var(--tint-h) 6% 16%);
+	--hero-ink: #ffffff;
+	--hero-mut: hsl(var(--tint-h) 36% 82%);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]):not([data-theme="dark"]) {
+		color-scheme: dark;
+		--bg: #1c2027; --side: #151820; --card: #232832; --pill: #2a303b; --line: #2f3541;
+		--line-strong: #485162;
+		--ink: #eef0f4; --mut: #9aa3b2; --mut2: #a3acba; --off: #7f8898;
+		--acc: #f0c03a; --acc-ink: #1c1a10; --acc-txt: #f0c03a;
+		--ok: #5cc982; --rev: #f0a640; --err: #ff6b6b;
+		--ok-bg: #1f3329; --rev-bg: #3a2f1e; --err-bg: #3b2226;
+		--bar: #11141a; --odd: rgba(255, 255, 255, .025); --sel: rgba(240, 192, 58, .12);
+		--sh1: #2a303b; --sh2: #333a47;
+		--veil: rgba(5, 7, 10, .62);
+		--shadow: 0 18px 48px rgba(0, 0, 0, .5);
+		--focus: #f0c03a;
+		--hero-top: hsl(var(--tint-h) var(--tint-s) 28%);
+		--hero-mid: hsl(var(--tint-h) 6% 16%);
+		--hero-ink: #ffffff;
+		--hero-mut: hsl(var(--tint-h) 36% 82%);
+	}
+}
