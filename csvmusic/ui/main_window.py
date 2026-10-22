@@ -29,10 +29,13 @@ from csvmusic.version import APP_VERSION
 from csvmusic.core.browsers import list_profiles
 from csvmusic.core.youtube_url import YouTubeVideoUrlError, parse_youtube_video_id
 from csvmusic.core.library import record_library_download_result
+from csvmusic.core.log import log
 
 YELLOW = QColor(255, 244, 179)   # soft yellow
 RED = QColor(255, 205, 210)      # soft red
 GREEN = QColor(200, 230, 201)    # soft green
+# Depois do wait normal, quanto mais esperar o worker sair sozinho (ms).
+_SHUTDOWN_EXTRA_WAIT_MS = 10000
 
 class ResumeLocationDialog(QDialog):
 	"""Select either a directory or an M3U playlist in one browser."""
@@ -3096,10 +3099,12 @@ class MainWindow(QMainWindow):
 				thread.wait(wait_ms)
 		except Exception:
 			pass
+		# Nunca terminate(): matar a thread no meio de uma gravação deixava arquivo
+		# pela metade e o yt-dlp órfão. stop() já encerra o yt-dlp/ffmpeg em
+		# andamento; aqui só esperamos um pouco mais.
 		try:
-			if thread.isRunning():
-				thread.terminate()
-				thread.wait(1000)
+			if thread.isRunning() and not thread.wait(_SHUTDOWN_EXTRA_WAIT_MS):
+				log(f"shutdown: {type(thread).__name__} still finishing after stop; not terminating it")
 		except Exception:
 			pass
 

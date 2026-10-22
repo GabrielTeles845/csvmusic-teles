@@ -58,14 +58,14 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 - [x] 1.6 Log de pulo mostra as queries reais e o melhor candidato (`04 bug 27`)
 
 ### Download (doc 04)
-- [ ] 1.7 Detecção de bloqueio no stderr **cru** (bug do "not a bot" nunca detectado) (`04 bug 1-2`)
-- [ ] 1.8 Perfil por tamanho vira só teto inicial, **sem** mensagem falsa de "throttling" (`04 bug 3`)
-- [ ] 1.9 Sem pausa depois de faixa pulada (`04 bug 23`)
-- [ ] 1.10 `_cleanup_outputs` só apaga temporários e o formato atual (hoje apaga mp3 antigo ao trocar formato!) (`04 bug 9`)
-- [ ] 1.11 Gravação atômica: `.partial` → tags → `os.replace` (arquivo parcial nunca conta como baixado) (`04 bug 8`)
-- [ ] 1.12 m4a com Opus dentro → reencodar para AAC (compatibilidade Apple) (`04 bug 7`)
-- [ ] 1.13 Remover o fallback `ytsearch1:` (baixa áudio não verificado) ou passar pela nota (`04 bug 6`)
-- [ ] 1.14 Timeout no subprocess + parar de verdade no Stop (sem `terminate()`) (`04 bug 13`, `03 §5`)
+- [x] 1.7 Detecção de bloqueio no stderr **cru** (bug do "not a bot" nunca detectado) (`04 bug 1-2`)
+- [x] 1.8 Perfil por tamanho vira só teto inicial, **sem** mensagem falsa de "throttling" (`04 bug 3`) — feito em 22/10/2026: 250+ músicas usa o perfil `large-batch`; o `aggressive` só entra com sinal real de bloqueio
+- [x] 1.9 Sem pausa depois de faixa pulada (`04 bug 23`)
+- [x] 1.10 `_cleanup_outputs` só apaga temporários e o formato atual (hoje apaga mp3 antigo ao trocar formato!) (`04 bug 9`) — feito em 22/10/2026: yt-dlp e ffmpeg escrevem em `<playlist>/.csvmusic-partial/` e a limpeza só mexe lá; o arquivo substituído por um download novo vai para `<playlist>/.csvmusic-lixeira/` (ainda sem botão para esvaziar)
+- [x] 1.11 Gravação atômica: `.partial` → tags → `os.replace` (arquivo parcial nunca conta como baixado) (`04 bug 8`) — feito em 22/10/2026: tags e conferência de duração rodam no arquivo da pasta temporária, depois `os.replace`
+- [x] 1.12 m4a com Opus dentro → reencodar para AAC (compatibilidade Apple) (`04 bug 7`)
+- [x] 1.13 Remover o fallback `ytsearch1:` (baixa áudio não verificado) ou passar pela nota (`04 bug 6`) — feito em 22/10/2026: removido; se o vídeo escolhido falha, tenta até 2 resultados seguintes com nota ≥ `CONFIDENCE_MIN` (sem `duration_mismatch`)
+- [x] 1.14 Timeout no subprocess + parar de verdade no Stop (sem `terminate()`) (`04 bug 13`, `03 §5`) — feito em 22/10/2026: timeout de 600 s; no yt-dlp embutido (mesmo processo) o Stop vale na próxima linha que ele escrever
 
 ### Biblioteca (doc 07)
 - [ ] 1.15 Gravar pulos (`not_found_on_youtube` com motivo e data) (`07 §3.3.1`)
@@ -91,7 +91,7 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 - [x] 1.28 Comando `fill_durations`: preenche a biblioteca atual a partir da planilha pelo ID do Spotify, com backup (`13 §5.1`) — **resolve as 1.124 músicas sem duração**. `python -m csvmusic.tools.fill_durations --csv <planilha> [--library <library.json>] [--dry-run]`; recusa com o app aberto (22/10/2026)
 - [x] 1.29 Nota mais rígida quando a duração é confiável + fora da tolerância vira `duration_mismatch`, não "busca vazia" (`13 §4.2-4.3`) — feito em `ytmusic_match.py` (22/10/2026): tabela 1.0+0.05 (≤2 s) / 0.95 / 0.8 / 0.6 / 0.4 / 0.2; "confiável" = tem `duration_ms` e `duration_source` fora de {deezer, itunes, musicbrainz, estimated} (sem `duration_source` conta como confiável); `duration_precision_s` desconta da diferença. Falta o passo 3 do `13 §4.3` (marcar "Revisar" na tela com os 5 candidatos), que é da interface.
   - Decisões da nota tomadas junto (itens 1.1 e 1.4): remaster pedido e ausente no candidato não penaliza mais (era −0.08; é a mesma gravação, e é o que leva o Blur de 0.765 para 0.845); marca de versão que só o **álbum** pedido tem custa −0.10 quando falta no candidato (a do título continua −0.34), porque nome de álbum engana ("Live Through This"); "mix" sozinho não é remix, só "club/dub/dance/vocal mix".
-- [ ] 1.30 Conferir a duração do arquivo depois de baixar e rejeitar se não bater (`13 §4.4`)
+- [x] 1.30 Conferir a duração do arquivo depois de baixar e rejeitar se não bater (`13 §4.4`) — feito em 22/10/2026: ≤3 s confere, 3–10 s marca para revisão, >10 s (+precisão) rejeita e tenta o próximo; link escolhido à mão (`preferred_selection_locked`) só registra no log
 - [ ] Depois (fase 4/7): enriquecimento automático por embed/Deezer/iTunes, coluna "Duração" na tela, exportar CSV com duração (`13 §5.2-5.3, §4.6`)
 
 **Pronto quando:** playlist de teste (~50 músicas, com remasters/feat/live) baixa sem pulos bobos; parar no meio e retomar não deixa arquivo quebrado; testes novos cobrindo cada correção.

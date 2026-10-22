@@ -1,3 +1,5 @@
+import pathlib
+import pytest
 from csvmusic.core import downloader
 import unicodedata
 
@@ -195,3 +197,346 @@ def test_write_m3u_uses_relative_media_paths_from_custom_folder(tmp_path):
 
 	assert path == playlist_dir / "Mix.m3u8"
 	assert path.read_text(encoding="utf-8").splitlines()[-1] == "../Music/Mix/Artist - Song.mp3"
+
+
+@pytest.mark.parametrize("download", [downloader.download_mp3, downloader.download_m4a, downloader.download_opus])
+def test_bot_check_in_raw_stderr_is_detected_and_stops_attempts(monkeypatch, tmp_path, download):
+	calls = []
+	def fail(args):
+		calls.append(args)
+		return 1, "", "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies"
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with pytest.raises(downloader.YouTubeRiskError) as error:
+		download("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert error.value.reason == "YouTube asked for bot verification"
+	assert len(calls) == 1
+
+
+def test_rate_limit_on_first_attempt_is_not_masked_by_later_errors(monkeypatch, tmp_path):
+	answers = iter([
+		(1, "", "ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests"),
+	] + [(1, "", "ERROR: Video unavailable")] * 30)
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", lambda _args: next(answers))
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with pytest.raises(downloader.YouTubeRiskError) as error:
+		downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert error.value.reason == "YouTube returned HTTP 429"
+
+
+def test_plain_failures_keep_details_from_every_attempt(monkeypatch, tmp_path):
+	answers = iter([(1, "", "ERROR: first problem")] + [(1, "", "ERROR: last problem")] * 30)
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", lambda _args: next(answers))
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with pytest.raises(downloader.DownloadError) as error:
+		downloader.download_opus("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert not isinstance(error.value, downloader.YouTubeRiskError)
+	assert "first problem" in str(error.value)
+	assert "last problem" in str(error.value)
+
+
+@pytest.mark.parametrize("count", [500, 1124, 5000])
+def test_huge_batch_starts_paced_without_false_throttling_warning(count):
+	profile = downloader.youtube_batch_mitigation(count, using_cookies=False)
+
+	assert profile.label != downloader.YOUTUBE_MITIGATION_AGGRESSIVE.label
+	assert profile.active is True
+	assert "throttling" not in (profile.warning or "").lower()
+	assert "started throttling" not in (downloader.youtube_risk_acknowledgement(profile) or "").lower()
+
+
+def _fake_tools(monkeypatch, *, ext="webm", payload=b"new audio", codec="aac"):
+	"""Simulate yt-dlp (writes the -o target) and ffmpeg (copies input to output)."""
+	import shutil
+	import subprocess
+	calls = {"ytdlp": [], "ffmpeg": []}
+
+	def fake_ytdlp(args):
+		calls["ytdlp"].append(args)
+		target = args[args.index("-o") + 1].replace("%(ext)s", ext)
+		pathlib.Path(target).write_bytes(payload)
+		return 0, "", ""
+
+	def fake_capture(cmd, **_kwargs):
+		calls["ffmpeg"].append(cmd)
+		source = cmd[cmd.index("-i") + 1] if "-i" in cmd else None
+		if source and cmd[-1] == source:
+			# ffmpeg -i <arquivo> sem saída: só descreve as faixas.
+			return subprocess.CompletedProcess(cmd, 1, "", f"Stream #0:0: Audio: {codec}, 48000 Hz, stereo")
+		if source and not cmd[-1].startswith("-"):
+			shutil.copyfile(source, cmd[-1])
+		return subprocess.CompletedProcess(cmd, 0, "", "")
+
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fake_ytdlp)
+	monkeypatch.setattr(downloader, "_run_capture", fake_capture)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	monkeypatch.setattr(downloader, "store_source", lambda _path: None)
+	return calls
+
+
+@pytest.mark.parametrize("download, fmt", [
+	(downloader.download_m4a, "m4a"),
+	(downloader.download_mp3, "mp3"),
+	(downloader.download_opus, "opus"),
+])
+def test_switching_format_keeps_other_files_of_the_same_song(monkeypatch, tmp_path, download, fmt):
+	_fake_tools(monkeypatch)
+	others = {}
+	for ext in ("mp3", "m4a", "opus", "lrc", "webm"):
+		if ext == fmt:
+			continue
+		path = tmp_path / f"Artist - Song.{ext}"
+		path.write_bytes(f"old {ext}".encode())
+		others[path] = path.read_bytes()
+
+	result = download("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert result == tmp_path / f"Artist - Song.{fmt}"
+	assert result.read_bytes() == b"new audio"
+	for path, content in others.items():
+		assert path.read_bytes() == content
+	assert not (tmp_path / downloader.STAGING_DIR_NAME).exists()
+
+
+def test_redownload_keeps_replaced_file_in_trash(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+	current = tmp_path / "Artist - Song.mp3"
+	current.write_bytes(b"old audio")
+
+	downloader.download_mp3("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert current.read_bytes() == b"new audio"
+	kept = list((tmp_path / downloader.TRASH_DIR_NAME).iterdir())
+	assert len(kept) == 1 and kept[0].suffix == ".mp3"
+	assert kept[0].read_bytes() == b"old audio"
+
+
+def test_failed_download_leaves_no_partial_files(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+
+	def fail(args):
+		target = args[args.index("-o") + 1].replace("%(ext)s", "webm")
+		pathlib.Path(target + ".part").write_bytes(b"half")
+		return 1, "", "ERROR: Video unavailable"
+
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	existing = tmp_path / "Artist - Song.m4a"
+	existing.write_bytes(b"old audio")
+
+	with pytest.raises(downloader.DownloadError):
+		downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert existing.read_bytes() == b"old audio"
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.m4a"]
+
+
+@pytest.mark.parametrize("download, fmt", [
+	(downloader.download_m4a, "m4a"),
+	(downloader.download_mp3, "mp3"),
+	(downloader.download_opus, "opus"),
+])
+def test_file_is_finished_before_it_reaches_the_playlist_folder(monkeypatch, tmp_path, download, fmt):
+	_fake_tools(monkeypatch)
+	final = tmp_path / f"Artist - Song.{fmt}"
+	seen = []
+
+	def before_install(staged):
+		seen.append((staged, final.exists()))
+
+	result = download("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg", before_install=before_install)
+
+	assert result == final and final.read_bytes() == b"new audio"
+	assert len(seen) == 1
+	staged, final_existed = seen[0]
+	assert staged.parent.name == downloader.STAGING_DIR_NAME
+	assert staged.suffix == f".{fmt}"
+	assert final_existed is False
+
+
+def test_failed_finishing_step_never_leaves_a_file_in_the_playlist_folder(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+	previous = tmp_path / "Artist - Song.m4a"
+	previous.write_bytes(b"old audio")
+
+	def broken_tags(_staged):
+		raise RuntimeError("tagging crashed")
+
+	with pytest.raises(RuntimeError, match="tagging crashed"):
+		downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg", before_install=broken_tags)
+
+	assert previous.read_bytes() == b"old audio"
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.m4a"]
+
+
+@pytest.mark.parametrize("codec, expect_copy", [("opus", False), ("vorbis", False), ("aac", True)])
+def test_m4a_only_copies_streams_apple_devices_can_play(monkeypatch, tmp_path, codec, expect_copy):
+	calls = _fake_tools(monkeypatch, codec=codec)
+
+	result = downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg")
+
+	assert result == tmp_path / "Artist - Song.m4a"
+	writes = [cmd for cmd in calls["ffmpeg"] if cmd[-1].endswith(".normalized.m4a")]
+	assert len(writes) == 1
+	encoder = writes[0][writes[0].index("-c:a") + 1]
+	assert encoder == ("copy" if expect_copy else "aac")
+
+
+@pytest.mark.parametrize("download, expected_calls", [
+	(downloader.download_m4a, 2 * len(downloader.YOUTUBE_CLIENTS) * 2),
+	(downloader.download_mp3, 2 * len(downloader.YOUTUBE_CLIENTS)),
+	(downloader.download_opus, 2 * len(downloader.YOUTUBE_CLIENTS)),
+])
+def test_failed_video_is_never_replaced_by_an_unchecked_youtube_search(monkeypatch, tmp_path, download, expected_calls):
+	calls = []
+	def fail(args):
+		calls.append(args)
+		return 1, "", "ERROR: Video unavailable"
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+
+	with pytest.raises(downloader.DownloadError):
+		download("video", tmp_path, "07- Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+
+	assert len(calls) == expected_calls
+	assert not any(arg.startswith("ytsearch") for call in calls for arg in call)
+	assert all(call[-1].endswith("v=video") for call in calls)
+
+
+def _sleeper_cmd(seconds: float) -> list[str]:
+	import sys
+	return [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+
+
+def test_stuck_tool_is_killed_after_timeout():
+	import time
+	started = time.monotonic()
+	with pytest.raises(downloader.DownloadError, match="did not finish"):
+		downloader._run_capture(_sleeper_cmd(30), timeout=0.5)
+	assert time.monotonic() - started < 10
+
+
+def test_stop_kills_the_running_tool_right_away():
+	import threading
+	import time
+	event = threading.Event()
+	threading.Timer(0.3, event.set).start()
+	started = time.monotonic()
+	with downloader.cancellation_scope(event):
+		with pytest.raises(downloader.DownloadCancelled):
+			downloader._run_capture(_sleeper_cmd(30))
+	assert time.monotonic() - started < 10
+
+
+def test_stop_ends_in_process_ytdlp_at_its_next_output(monkeypatch):
+	import sys
+	import threading
+	import time
+	import yt_dlp
+	event = threading.Event()
+
+	def fake_main(_args):
+		for n in range(400):
+			if n == 3:
+				event.set()
+			sys.stdout.write(f"[download] {n}%\n")
+			time.sleep(0.01)
+		return 0
+
+	monkeypatch.setattr(yt_dlp, "main", fake_main)
+	with downloader.cancellation_scope(event):
+		with pytest.raises(downloader.DownloadCancelled):
+			downloader._run_ytdlp_module(["url"])
+	assert sys.stdout.__class__.__name__ != "_AbortableBuffer"
+
+
+def test_stop_before_next_attempt_skips_remaining_clients(monkeypatch, tmp_path):
+	import threading
+	event = threading.Event()
+	calls = []
+
+	def fail(args):
+		calls.append(args)
+		event.set()
+		return 1, "", "ERROR: Video unavailable"
+
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with downloader.cancellation_scope(event):
+		with pytest.raises(downloader.DownloadCancelled):
+			downloader.download_mp3("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert len(calls) == 1
+	assert not (tmp_path / downloader.STAGING_DIR_NAME).exists()
+
+
+def _length(monkeypatch, seconds):
+	monkeypatch.setattr(downloader, "measure_audio_duration_s", lambda _path: seconds)
+
+
+@pytest.mark.parametrize("track", [
+	{"duration_ms": 0},
+	{},
+	{"duration_ms": 177000, "duration_source": "deezer"},
+	{"duration_ms": 177000, "duration_source": "iTunes"},
+])
+def test_duration_check_is_skipped_without_trusted_length(monkeypatch, tmp_path, track):
+	_length(monkeypatch, 999.0)
+	assert downloader.check_downloaded_duration(tmp_path / "x.mp3", track) is None
+
+
+@pytest.mark.parametrize("actual, verified", [(177.0, True), (179.9, True), (174.2, True), (183.0, False), (187.0, False)])
+def test_small_length_differences_are_accepted(monkeypatch, tmp_path, actual, verified):
+	_length(monkeypatch, actual)
+	check = downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000, "duration_source": "csv"})
+	assert check.verified is verified
+	assert check.needs_review is (not verified)
+
+
+@pytest.mark.parametrize("actual", [187.5, 214.0, 90.0, 166.0])
+def test_length_off_by_more_than_ten_seconds_is_rejected(monkeypatch, tmp_path, actual):
+	_length(monkeypatch, actual)
+	with pytest.raises(downloader.DurationMismatchError, match="wrong length"):
+		downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000})
+
+
+def test_minute_second_precision_gets_one_more_second(monkeypatch, tmp_path):
+	_length(monkeypatch, 188.0)
+	track = {"duration_ms": 177500, "duration_precision_s": 1}
+	assert downloader.check_downloaded_duration(tmp_path / "x.mp3", track).needs_review is True
+
+
+def test_unreadable_file_is_rejected_when_length_is_known(monkeypatch, tmp_path):
+	_length(monkeypatch, None)
+	with pytest.raises(downloader.DurationMismatchError):
+		downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000})
+
+
+def test_without_reject_a_wrong_length_is_only_reported(monkeypatch, tmp_path):
+	_length(monkeypatch, 240.0)
+	check = downloader.check_downloaded_duration(tmp_path / "x.mp3", {"duration_ms": 177000}, reject=False)
+	assert check.diff_s == pytest.approx(63.0)
+	assert check.needs_review is True
+
+
+def test_real_mp3_length_is_read_by_mutagen(tmp_path):
+	import shutil
+	import subprocess
+	ffmpeg = shutil.which("ffmpeg")
+	if not ffmpeg:
+		pytest.skip("ffmpeg not installed")
+	path = tmp_path / "tone.mp3"
+	subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=5", "-codec:a", "libmp3lame", str(path)], check=True)
+	assert downloader.measure_audio_duration_s(path) == pytest.approx(5.0, abs=0.2)
+
+
+def test_wrong_length_in_finishing_step_keeps_previous_file(monkeypatch, tmp_path):
+	_fake_tools(monkeypatch)
+	_length(monkeypatch, 300.0)
+	previous = tmp_path / "Artist - Song.mp3"
+	previous.write_bytes(b"old audio")
+	track = {"duration_ms": 177000}
+
+	with pytest.raises(downloader.DurationMismatchError):
+		downloader.download_mp3("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP, ffmpeg_bin="ffmpeg", before_install=lambda staged: downloader.check_downloaded_duration(staged, track))
+
+	assert previous.read_bytes() == b"old audio"
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["Artist - Song.mp3"]
