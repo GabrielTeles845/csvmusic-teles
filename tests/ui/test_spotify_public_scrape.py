@@ -1,5 +1,5 @@
 from csvmusic.core.spotify_import import SpotifyImportError, SpotifyPlaylistPrivateError
-from csvmusic.ui.spotify_public_scrape import baseline_error_kind, jittered_scroll_delay_ms, metadata_gap_positions, normalized_capture, ordered_playlist_tracks, recover_single_missing_position
+from csvmusic.ui.spotify_public_scrape import baseline_error_kind, baseline_row, jittered_scroll_delay_ms, merge_captured_duration, metadata_gap_positions, normalized_capture, ordered_playlist_tracks, recover_single_missing_position
 
 
 def test_normalized_capture_maps_public_row():
@@ -85,3 +85,55 @@ def test_ambiguous_positionless_tracks_are_not_guessed():
 def test_baseline_error_kind_separates_private_from_other_failures():
 	assert baseline_error_kind(SpotifyPlaylistPrivateError()) == "private"
 	assert baseline_error_kind(SpotifyImportError("Spotify took too long to respond.")) == "error"
+
+
+def test_normalized_capture_reads_row_duration_as_mss():
+	track = normalized_capture({"id": "t", "position": 1, "title": "Song", "artists": ["A"], "duration": "2:57"})
+
+	assert track["duration_ms"] == 177500
+	assert track["duration_source"] == "spotify"
+	assert track["duration_precision_s"] == 1
+
+
+def test_normalized_capture_ignores_non_clock_duration_text():
+	track = normalized_capture({"id": "t", "position": 1, "title": "Song", "artists": ["A"], "duration": "1979"})
+
+	assert "duration_ms" not in track
+
+
+def test_baseline_row_keeps_exact_embed_duration_and_page_does_not_replace_it():
+	row = baseline_row({"title": "Song", "artists": "A", "duration_ms": 177321}, "t", 1)
+	merge_captured_duration(row, {"duration_ms": 177500, "duration_source": "spotify", "duration_precision_s": 1})
+
+	assert row["duration_ms"] == 177321
+	assert row["duration_precision_s"] == 0
+
+	empty = baseline_row({"title": "Song", "artists": "A"}, "u", 2)
+	merge_captured_duration(empty, {"duration_ms": 177500, "duration_source": "spotify", "duration_precision_s": 1})
+
+	assert empty["duration_ms"] == 177500
+	assert empty["duration_precision_s"] == 1
+
+
+def test_baseline_duration_reaches_the_finished_scan(qt_application):
+	from types import SimpleNamespace
+
+	from csvmusic.ui.spotify_public_scrape import SpotifyPublicScrapeDialog
+
+	dialog = SpotifyPublicScrapeDialog()
+	emitted = []
+	dialog.scrape_finished.connect(emitted.append)
+	dialog.running = True
+	dialog.session_id = "s"
+	playlist = SimpleNamespace(
+		name="P", cover_url="playlist-cover", total_count=1, warning=None,
+		tracks=[{"sp_id": "t", "title": "Song", "artists": "A", "album": "Al", "cover_url": "album-cover", "duration_ms": 201000}],
+	)
+	try:
+		dialog._baseline_finished(True, playlist, "", "https://open.spotify.com/playlist/x", session="s")
+	finally:
+		dialog.running = False
+		dialog.timer.stop()
+		dialog.deleteLater()
+
+	assert emitted[0]["tracks"][0]["duration_ms"] == 201000
