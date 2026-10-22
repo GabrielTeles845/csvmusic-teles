@@ -743,6 +743,23 @@ class AlternativesFetchWorker(QThread):
 			self.sig_done.emit(self.row_idx, [], str(exc))
 
 
+class VideoInfoWorker(QThread):
+	"""Look up one pasted YouTube link: title, channel, length and kind."""
+	sig_done = Signal(str, dict, str)
+
+	def __init__(self, video_id: str, parent: QObject | None = None):
+		super().__init__(parent)
+		self.video_id = video_id
+
+	def run(self):
+		from csvmusic.core.manual_match import fetch_video_info
+		try:
+			self.sig_done.emit(self.video_id, fetch_video_info(self.video_id), "")
+		except Exception as exc:
+			log(f"video info failure: video_id={self.video_id} error={exc}")
+			self.sig_done.emit(self.video_id, {}, str(exc))
+
+
 class YouTubeSessionTestWorker(QThread):
 	"""Bounded network check; never returns cookie contents or private account data."""
 	sig_done = Signal(bool, str)

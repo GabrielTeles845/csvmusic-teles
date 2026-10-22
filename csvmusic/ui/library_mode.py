@@ -32,9 +32,10 @@ from csvmusic.core.preflight import ffmpeg_supports_mp3
 from csvmusic.core.track_output import SUPPORTED_FORMATS, expected_track_path, library_format
 from csvmusic.core.downloader import sanitize_name, tag_file, write_m3u, youtube_batch_mitigation, youtube_risk_acknowledgement
 from csvmusic.core.youtube_url import YouTubeVideoUrlError, parse_youtube_video_id
+from csvmusic.core.manual_match import choice_warnings, describe_video
 from csvmusic.ui.spotify_public_scrape import SpotifyPublicScrapeDialog
 from csvmusic.ui.device_sync import DeviceSyncDialog
-from csvmusic.ui.workers import AlternativesFetchWorker, PipelineWorker, SingleDownloadWorker, UpdateCheckWorker
+from csvmusic.ui.workers import AlternativesFetchWorker, PipelineWorker, SingleDownloadWorker, UpdateCheckWorker, VideoInfoWorker
 from csvmusic.core.youtube_music_import import fetch_youtube_music_source
 from csvmusic.core.apple_music_import import fetch_apple_music_source
 from csvmusic.core.spotify_import import fetch_spotify_playlist
@@ -1081,6 +1082,23 @@ class LibrarySettingsDialog(QDialog):
 		self.accept()
 
 
+# Lookups still running when their dialog closes stay referenced here until they
+# finish; a QThread destroyed while running aborts the whole app.
+_DETACHED_WORKERS: set = set()
+
+
+def _detach_running_worker(worker) -> None:
+	if worker is None or not worker.isRunning():
+		return
+	try:
+		worker.sig_done.disconnect()
+	except (RuntimeError, TypeError):
+		pass
+	worker.setParent(None)
+	_DETACHED_WORKERS.add(worker)
+	worker.finished.connect(lambda: _DETACHED_WORKERS.discard(worker))
+
+
 class TrackAlternativesDialog(QDialog):
 	selected = Signal(str, str, int)
 
@@ -1089,6 +1107,12 @@ class TrackAlternativesDialog(QDialog):
 		self.track = track
 		self.options: list[dict] = []
 		self.worker: AlternativesFetchWorker | None = None
+		self.info_worker: VideoInfoWorker | None = None
+		self.manual_info: dict = {}
+		self.manual_check_timer = QTimer(self)
+		self.manual_check_timer.setSingleShot(True)
+		self.manual_check_timer.setInterval(400)
+		self.manual_check_timer.timeout.connect(self._check_manual_link)
 		self.setWindowTitle("Song Settings")
 		self.resize(700, 500)
 		self.setFont(QFont("Comic Sans MS", 9))
@@ -1146,6 +1170,11 @@ class TrackAlternativesDialog(QDialog):
 		self.manual.setPlaceholderText("Or paste a YouTube URL")
 		self.manual.textChanged.connect(self._manual_selection_changed)
 		match_layout.addWidget(self.manual)
+		self.manual_check = QLabel("")
+		self.manual_check.setObjectName("manualLinkCheck")
+		self.manual_check.setWordWrap(True)
+		self.manual_check.hide()
+		match_layout.addWidget(self.manual_check)
 		tabs.addTab(match_tab, "YouTube Match")
 		audio_tab = QWidget()
 		audio_layout = QVBoxLayout(audio_tab)
@@ -1181,6 +1210,12 @@ class TrackAlternativesDialog(QDialog):
 		buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
 		self.save_button = buttons.button(QDialogButtonBox.Save)
 		self.save_button.setText("Save Settings")
+		# Same width for both buttons, wide enough for the longest Save label.
+		cancel_button = buttons.button(QDialogButtonBox.Cancel)
+		metrics = self.save_button.fontMetrics()
+		button_width = max(metrics.horizontalAdvance(text) for text in ("Save Settings", "Save Selection", "Cancel")) + 36
+		self.save_button.setMinimumWidth(button_width)
+		cancel_button.setMinimumWidth(button_width)
 		buttons.accepted.connect(self._accept_choice)
 		buttons.rejected.connect(self.reject)
 		layout.addWidget(buttons)
@@ -1204,8 +1239,12 @@ class TrackAlternativesDialog(QDialog):
 				warning = "  ⚠ LIVE"
 			elif "acoustic" in markers:
 				warning = "  ⚠ ACOUSTIC"
+			if option.get("duration_mismatch"):
+				warning += "  ⚠ WRONG LENGTH"
 			album_text = f"  •  Album: {album}" if album else ""
-			item = QListWidgetItem(f"[{source_label}]  {option.get('title', 'Unknown')} — {option.get('author', '')}{album_text}{warning}")
+			length = int(option.get("duration_seconds") or 0)
+			length_text = f"  •  {length // 60}:{length % 60:02d}" if length else ""
+			item = QListWidgetItem(f"[{source_label}]  {option.get('title', 'Unknown')} — {option.get('author', '')}{length_text}{album_text}{warning}")
 			item.setData(Qt.UserRole, option)
 			item.setToolTip(f"Source: {source_label}" + (f"\nAlbum: {album}" if album else "") + (f"\nDetected version: {', '.join(sorted(markers))}" if markers else ""))
 			self.list.addItem(item)
@@ -1233,13 +1272,63 @@ class TrackAlternativesDialog(QDialog):
 
 	def _manual_selection_changed(self, value: str) -> None:
 		value = value.strip()
+		self.manual_info = {}
 		if value:
 			self.list.clearSelection()
 			self.pending_match.setText(f"New selection: {value}")
 			self.save_button.setText("Save Selection")
-		elif not self.list.selectedItems():
-			self.pending_match.setText("New selection: No change")
-			self.save_button.setText("Save Settings")
+			self.manual_check_timer.start()
+		else:
+			self.manual_check_timer.stop()
+			self._show_manual_check("", "")
+			if not self.list.selectedItems():
+				self.pending_match.setText("New selection: No change")
+				self.save_button.setText("Save Settings")
+
+	def _show_manual_check(self, text: str, tone: str) -> None:
+		# Same palette as the song rows: yellow means "look at this", green means fine.
+		styles = {
+			"warning": "background: #fff0a8; color: #4a3000; border: 2px inset #ffffff; padding: 6px;",
+			"ok": "background: #ffffff; color: #005000; border: 2px inset #ffffff; padding: 6px;",
+			"neutral": "background: #ffffff; color: #303030; border: 2px inset #ffffff; padding: 6px;",
+		}
+		self.manual_check.setText(text)
+		self.manual_check.setStyleSheet(styles.get(tone, styles["neutral"]))
+		self.manual_check.setVisible(bool(text))
+
+	def _check_manual_link(self) -> None:
+		value = self.manual.text().strip()
+		if not value:
+			return
+		try:
+			video_id = parse_youtube_video_id(value)
+		except YouTubeVideoUrlError as exc:
+			self._show_manual_check(str(exc), "warning")
+			return
+		self._show_manual_check("Checking this video on YouTube Music…", "neutral")
+		self.info_worker = VideoInfoWorker(video_id, self)
+		self.info_worker.sig_done.connect(self._manual_link_checked)
+		self.info_worker.start()
+
+	def _manual_link_checked(self, video_id: str, info: dict, error: str) -> None:
+		try:
+			current = parse_youtube_video_id(self.manual.text())
+		except YouTubeVideoUrlError:
+			return
+		if current != video_id:
+			return
+		if error or not info:
+			self._show_manual_check("Could not check this video right now. You can still save it.", "neutral")
+			return
+		self.manual_info = info
+		self.pending_match.setText(f"New selection: {describe_video(info)}")
+		warnings = choice_warnings(self.track, info)
+		if warnings:
+			self._show_manual_check("\n".join(f"⚠ {warning}" for warning in warnings), "warning")
+		elif int(self.track.get("duration_ms") or 0) > 0:
+			self._show_manual_check("✓ Same song, same length.", "ok")
+		else:
+			self._show_manual_check("✓ Same song. Length not checked: this song has no saved length.", "ok")
 
 	def _accept_choice(self) -> None:
 		value = self.manual.text().strip()
@@ -1249,6 +1338,9 @@ class TrackAlternativesDialog(QDialog):
 			if value:
 				video_id = parse_youtube_video_id(value)
 				label = value
+				if self.manual_info.get("videoId") == video_id and self.manual_info.get("title"):
+					author = self.manual_info.get("author") or ""
+					label = self.manual_info["title"] + (f" — {author}" if author else "")
 			elif self.list.selectedItems():
 				option = self.list.selectedItems()[0].data(Qt.UserRole) or {}
 				video_id = str(option.get("videoId") or "")
@@ -1261,6 +1353,12 @@ class TrackAlternativesDialog(QDialog):
 
 	def _volume_changed(self, value: int) -> None:
 		self.volume_value.setText(f"{value:+d} dB" if value else "0 dB")
+
+	def done(self, result: int) -> None:
+		self.manual_check_timer.stop()
+		_detach_running_worker(self.worker)
+		_detach_running_worker(self.info_worker)
+		super().done(result)
 
 
 class LibraryGuideDialog(QDialog):
