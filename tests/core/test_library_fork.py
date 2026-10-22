@@ -229,3 +229,13 @@ def test_renamed_song_keeps_old_file_in_internal_trash(tmp_path):
 	assert not old_file.exists()
 	kept = list((new_file.parent / TRASH_DIR_NAME).iterdir())
 	assert len(kept) == 1 and kept[0].read_bytes() == b"old audio"
+
+
+def test_rescan_keeps_artist_fixed_by_hand():
+	library = _library_with_playlist()
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "one", "title": "Song", "artists": "Artsit"}])
+	stored = library["playlists"][0]["tracks"][0]
+	stored["artists"] = "Artist"
+	stored["custom_artists"] = True
+	merge_playlist_scan(library, PLAYLIST_ID, "Playlist", [{"id": "one", "title": "Song", "artists": "Artsit"}])
+	assert library["playlists"][0]["tracks"][0]["artists"] == "Artist"

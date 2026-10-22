@@ -354,6 +354,9 @@ def merge_playlist_scan(
 		if old.get("custom_album"):
 			track["album"] = old.get("album") or ""
 			track["custom_album"] = True
+		if old.get("custom_artists"):
+			track["artists"] = old.get("artists") or track["artists"]
+			track["custom_artists"] = True
 		if not track.get("duration_ms") and old.get("duration_ms"):
 			# A scan without durations (e.g. the browser reader) must not erase one read before (doc 13).
 			track["duration_ms"] = int(old["duration_ms"])
