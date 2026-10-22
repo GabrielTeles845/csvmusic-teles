@@ -19,6 +19,7 @@ from mutagen import File as MutagenFile
 from csvmusic.core.downloader import sanitize_name
 from csvmusic.core.log import log
 from csvmusic.core.library import library_track_path
+from csvmusic.core.track_output import library_format
 from csvmusic.core.paths import resource_base
 from csvmusic.core.settings import settings_path
 from csvmusic.core.subprocess_env import hidden_subprocess_kwargs
@@ -118,7 +119,7 @@ def discover_devices() -> list[PortableDevice]:
 
 def _ready_playlists(library: dict) -> tuple[list[tuple[dict, list[tuple[dict, pathlib.Path]]]], list[str]]:
 	root = pathlib.Path(library.get("output_dir") or "")
-	fmt = str(library.get("format") or "mp3")
+	fmt = library_format(library)
 	ready: list[tuple[dict, list[tuple[dict, pathlib.Path]]]] = []
 	skipped: list[str] = []
 	for playlist in library.get("playlists", []):

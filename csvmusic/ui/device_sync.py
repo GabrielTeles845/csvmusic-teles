@@ -14,6 +14,7 @@ from csvmusic.core.device_sync import (
 )
 from csvmusic.core.log import log
 from csvmusic.core.library import library_track_path
+from csvmusic.core.track_output import library_format
 from csvmusic.core.settings import load_settings, save_settings
 
 
@@ -197,7 +198,7 @@ class DeviceSyncDialog(QDialog):
 			name = str(playlist.get("name") or "Playlist")
 			tracks = [track for track in playlist.get("tracks", []) if track.get("enabled", True)]
 			output_root = pathlib.Path(self.library.get("output_dir") or "")
-			fmt = str(self.library.get("format") or "mp3")
+			fmt = library_format(self.library)
 			local_tracks = []
 			for source_track in tracks:
 				track = dict(source_track)

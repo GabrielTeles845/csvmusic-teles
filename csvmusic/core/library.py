@@ -3,16 +3,18 @@ import csv
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import unicodedata
 import re
+import shutil
 import tempfile
 from typing import Any
 from urllib.parse import urlparse
 
 from csvmusic.core.spotify_import import parse_spotify_source
-from csvmusic.core.downloader import sanitize_name
-from csvmusic.core.track_output import expected_track_path
+from csvmusic.core.downloader import is_age_restriction_error, sanitize_name, write_m3u
+from csvmusic.core.track_output import expected_track_path, library_format
 from csvmusic.core.youtube_music_import import parse_youtube_music_source
 from csvmusic.core.apple_music_import import parse_apple_music_source_url
 from csvmusic.core.deezer_import import parse_deezer_source
@@ -35,14 +37,37 @@ def new_library(name: str = "My Library", output_dir: str = "") -> dict:
 	}
 
 
+class LibraryVersionError(ValueError):
+	"""The file is a CSVMusic library, but of a version this build cannot read (no migration exists)."""
+
+
 def load_library(path: str | pathlib.Path) -> dict:
 	with pathlib.Path(path).open("r", encoding="utf-8") as handle:
 		data = json.load(handle)
-	if not isinstance(data, dict) or data.get("version") != LIBRARY_VERSION:
+	if not isinstance(data, dict):
+		raise ValueError("This is not a supported CSVMusic library file.")
+	if data.get("version") != LIBRARY_VERSION:
+		if isinstance(data.get("playlists"), list):
+			raise LibraryVersionError(
+				f"This library was saved as version {data.get('version')!r}; this CSVMusic reads version {LIBRARY_VERSION}."
+			)
 		raise ValueError("This is not a supported CSVMusic library file.")
 	if not isinstance(data.get("playlists"), list):
 		raise ValueError("The library playlist list is invalid.")
 	return data
+
+
+def backup_library_file(path: str | pathlib.Path) -> pathlib.Path:
+	"""Copy a library file that could not be read next to it, without touching the original."""
+	source = pathlib.Path(path)
+	stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+	target = source.with_name(f"{source.name}.unreadable-{stamp}.bak")
+	counter = 1
+	while target.exists():
+		counter += 1
+		target = source.with_name(f"{source.name}.unreadable-{stamp}-{counter}.bak")
+	shutil.copy2(source, target)
+	return target
 
 
 def save_library(path: str | pathlib.Path, library: dict) -> None:
@@ -50,8 +75,15 @@ def save_library(path: str | pathlib.Path, library: dict) -> None:
 	target.parent.mkdir(parents=True, exist_ok=True)
 	library["updated_at"] = _now()
 	with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".tmp", prefix="csvmusic-library-", dir=target.parent, delete=False) as handle:
-		json.dump(library, handle, ensure_ascii=False, indent=2)
 		temporary = pathlib.Path(handle.name)
+		try:
+			json.dump(library, handle, ensure_ascii=False, indent=2)
+			handle.flush()
+			os.fsync(handle.fileno())
+		except BaseException:
+			handle.close()
+			temporary.unlink(missing_ok=True)
+			raise
 	temporary.replace(target)
 
 
@@ -242,7 +274,13 @@ def merge_playlist_scan(
 	reported_total: int | None = None,
 	warning: str | None = None,
 	cover_url: str | None = None,
+	complete: bool = True,
 ) -> dict:
+	"""Merge a fresh scan into a playlist, keeping user choices and file state.
+
+	When the scan is incomplete (`complete=False`), songs it did not see are kept at their old place
+	instead of being removed: a partial read must never delete what an earlier scan found.
+	"""
 	playlist = playlist_by_id(library, playlist_id)
 	if playlist is None:
 		raise KeyError(f"Playlist {playlist_id} is not in this library.")
@@ -257,6 +295,10 @@ def merge_playlist_scan(
 	effective_name = str(playlist.get("name") or name or "Spotify Playlist").strip() if playlist.get("custom_name") else str(name or playlist.get("name") or "Spotify Playlist").strip()
 	merged: list[dict] = []
 	seen: set[str] = set()
+	used_old: set[int] = set()
+	old_by_text: dict[str, list[dict]] = {}
+	for candidate in playlist.get("tracks", []):
+		old_by_text.setdefault(_track_text_key(candidate), []).append(candidate)
 	new_occurrences: dict[str, int] = {}
 	for position, raw in enumerate(tracks, start=1):
 		track = _normalized_track(raw, effective_name, position)
@@ -270,16 +312,23 @@ def merge_playlist_scan(
 		seen.add(key)
 		old = previous.get(key, {})
 		if not old:
-			text_key = _track_text_key(track)
-			matching_old = [candidate for candidate in playlist.get("tracks", []) if _track_text_key(candidate) == text_key]
+			matching_old = old_by_text.get(_track_text_key(track), [])
 			if len(matching_old) == 1:
 				old = matching_old[0]
+		if old:
+			used_old.add(id(old))
 		if old.get("custom_title"):
 			track["title"] = old.get("title") or track["title"]
 			track["custom_title"] = True
 		if old.get("custom_album"):
 			track["album"] = old.get("album") or ""
 			track["custom_album"] = True
+		if not track.get("duration_ms") and old.get("duration_ms"):
+			# A scan without durations (e.g. the browser reader) must not erase one read before (doc 13).
+			track["duration_ms"] = int(old["duration_ms"])
+			for field in ("duration_source", "duration_precision_s"):
+				if old.get(field) not in (None, ""):
+					track[field] = old[field]
 		track["enabled"] = bool(old.get("enabled", True))
 		track["preferred_video_id"] = old.get("preferred_video_id") or track.get("preferred_video_id") or None
 		track["preferred_video_label"] = old.get("preferred_video_label") or track.get("preferred_video_label") or None
@@ -299,14 +348,26 @@ def merge_playlist_scan(
 		if not old_downloaded_path and old:
 			old_probe = dict(old)
 			old_probe["playlist"] = str(playlist.get("name") or effective_name or "Playlist")
-			candidate = library_track_path(old_probe, pathlib.Path(library.get("output_dir") or ""), str(library.get("format") or "mp3"))
+			candidate = library_track_path(old_probe, pathlib.Path(library.get("output_dir") or ""), library_format(library))
 			if candidate.is_file():
 				old_downloaded_path = str(candidate)
 		track["downloaded_path"] = old_downloaded_path or None
 		track["low_confidence_review"] = bool(old.get("low_confidence_review", False))
 		track["download_confidence"] = old.get("download_confidence")
+		for field in _SKIP_FIELDS:
+			track[field] = old.get(field) or None
+		track["failure_kind"] = old.get("failure_kind") or None
 		merged.append(track)
-	removed = [old for key, old in previous.items() if key not in seen]
+	old_positions = {id(old): index for index, old in enumerate(playlist.get("tracks", []))}
+	unseen = [old for key, old in previous.items() if key not in seen]
+	kept: list[dict] = []
+	if not complete:
+		leftovers = [old for old in unseen if id(old) not in used_old]
+		for old in sorted(leftovers, key=lambda item: old_positions.get(id(item), 0)):
+			old["playlist"] = effective_name
+			merged.insert(min(old_positions.get(id(old), len(merged)), len(merged)), old)
+			kept.append(old)
+	removed = [] if not complete else unseen
 	playlist.update({
 		"name": effective_name,
 		"last_scanned_at": _now(),
@@ -319,7 +380,8 @@ def merge_playlist_scan(
 		"last_diff": {
 			"added": sum(1 for track in merged if _track_key(track) not in previous),
 			"removed": len(removed),
-			"unchanged": sum(1 for track in merged if _track_key(track) in previous),
+			"unchanged": sum(1 for track in merged if _track_key(track) in previous) - len(kept),
+			**({"kept_from_incomplete_scan": len(kept)} if kept else {}),
 		},
 	})
 	return playlist
@@ -334,6 +396,21 @@ def mark_playlist_access_error(library: dict, playlist_id: str, kind: str, messa
 	playlist["access_error_message"] = message
 	playlist["access_error_at"] = _now()
 	return playlist
+
+
+def clear_playlist_access_error(library: dict, playlist_id: str) -> bool:
+	"""Drop an access mark after a scan that reached the playlist, even if it came back empty.
+
+	Returns True when something changed. A failed scan (network, timeout) must not call this:
+	it says nothing about whether the playlist is private.
+	"""
+	playlist = playlist_by_id(library, playlist_id)
+	if playlist is None or not (playlist.get("access_error") or playlist.get("access_error_message")):
+		return False
+	playlist["access_error"] = None
+	playlist["access_error_message"] = None
+	playlist["access_error_at"] = None
+	return True
 
 
 def _update_m3u_playlist_name(path: pathlib.Path, playlist_name: str) -> None:
@@ -397,74 +474,235 @@ def record_library_download_result(
 	low_confidence: bool = False,
 	confidence: float | None = None,
 ) -> None:
-	"""Persist a library track's latest download outcome for later inspection."""
+	"""Persist one download outcome straight to disk (legacy mode; Library Mode keeps the library in memory)."""
 	library = load_library(path)
+	stored = apply_library_download_result(
+		library, playlist_id, track,
+		downloaded=downloaded, error=error, match=match, low_confidence=low_confidence, confidence=confidence,
+	)
+	if stored is not None:
+		save_library(path, library)
+
+
+def apply_library_download_result(
+	library: dict,
+	playlist_id: str,
+	track: dict,
+	*,
+	downloaded: bool,
+	error: str | None = None,
+	match: dict | None = None,
+	low_confidence: bool = False,
+	confidence: float | None = None,
+	skipped: bool = False,
+	skip_reason: str | None = None,
+) -> dict | None:
+	"""Apply one download outcome to the in-memory library and return the stored track (None if not found).
+
+	A skip (no confident YouTube match) is recorded as `skip_state="not_found_on_youtube"` with its reason and date,
+	so the song stops looking like an unexplained "missing".
+	"""
 	playlist = playlist_by_id(library, playlist_id)
 	if playlist is None:
-		return
-	key = _track_key(track)
-	for stored in playlist.get("tracks", []):
-		if _track_key(stored) != key:
+		return None
+	stored = find_library_track(playlist, track)
+	if stored is None:
+		return None
+	if downloaded or error:
+		_clear_skip(stored)
+	if downloaded:
+		stored["force_redownload"] = False
+		stored["last_error"] = None
+		stored["last_error_at"] = None
+		stored["failure_kind"] = None
+		stored["last_downloaded_at"] = _now()
+		stored["downloaded_video_id"] = (match or {}).get("videoId") or stored.get("downloaded_video_id")
+		stored["downloaded_video_title"] = (match or {}).get("title") or stored.get("downloaded_video_title")
+		stored["downloaded_video_publisher"] = (
+			(match or {}).get("author") or (match or {}).get("artists") or stored.get("downloaded_video_publisher")
+		)
+		stored["low_confidence_review"] = bool(low_confidence)
+		stored["download_confidence"] = confidence
+		stored["filename_prefix_number"] = track.get("filename_prefix_number") or None
+		stored["filename_prefix_width"] = track.get("filename_prefix_width") or None
+		stored["audio_processing_signature"] = track.get("audio_processing_signature") or None
+		probe = dict(track)
+		probe["playlist"] = playlist.get("name") or "Playlist"
+		downloaded_file = expected_track_path(
+			probe, pathlib.Path(library.get("output_dir") or ""), library_format(library),
+		)
+		if downloaded_file.is_file():
+			old_downloaded = str(stored.get("downloaded_path") or "").strip()
+			if old_downloaded:
+				old_path = pathlib.Path(old_downloaded)
+				output_root = pathlib.Path(library.get("output_dir") or "").resolve()
+				try:
+					old_resolved = old_path.resolve()
+					if old_resolved != downloaded_file.resolve() and old_resolved.is_relative_to(output_root) and old_resolved.is_file():
+						old_resolved.unlink()
+				except (OSError, RuntimeError):
+					pass
+			stored["downloaded_path"] = str(downloaded_file)
+	elif error:
+		stored["last_error"] = str(error).strip()[:4000]
+		stored["last_error_at"] = _now()
+		stored["failure_kind"] = download_failure_kind(error)
+	elif skipped:
+		stored["skip_state"] = SKIP_NOT_FOUND_ON_YOUTUBE
+		stored["skip_reason"] = str(skip_reason or "No confident match on YouTube Music").strip()[:500]
+		stored["skipped_at"] = _now()
+	return stored
+
+
+SKIP_NOT_FOUND_ON_YOUTUBE = "not_found_on_youtube"
+_SKIP_FIELDS = ("skip_state", "skip_reason", "skipped_at")
+
+
+def _clear_skip(stored: dict) -> None:
+	for field in _SKIP_FIELDS:
+		stored[field] = None
+
+
+FAILURE_AGE_RESTRICTED = "age_restricted"
+
+
+def download_failure_kind(error: str | None) -> str | None:
+	"""Name failures the user can act on. Today only age restriction (needs a signed-in YouTube session)."""
+	if error and is_age_restriction_error(str(error)):
+		return FAILURE_AGE_RESTRICTED
+	return None
+
+
+def age_restricted_targets(failed: list[dict]) -> set[tuple[str, int]]:
+	"""(playlist key, song index) of the batch's failures caused by age restriction.
+
+	`failed` is the worker's list of {"track": ..., "error": ...}; library tracks carry their ids.
+	"""
+	targets: set[tuple[str, int]] = set()
+	for entry in failed or []:
+		track = entry.get("track") or {}
+		if download_failure_kind(entry.get("error")) != FAILURE_AGE_RESTRICTED or not track.get("library_playlist_id"):
 			continue
-		if downloaded:
-			stored["force_redownload"] = False
-			stored["last_error"] = None
-			stored["last_error_at"] = None
-			stored["last_downloaded_at"] = _now()
-			stored["downloaded_video_id"] = (match or {}).get("videoId") or stored.get("downloaded_video_id")
-			stored["downloaded_video_title"] = (match or {}).get("title") or stored.get("downloaded_video_title")
-			stored["downloaded_video_publisher"] = (
-				(match or {}).get("author") or (match or {}).get("artists") or stored.get("downloaded_video_publisher")
-			)
-			stored["low_confidence_review"] = bool(low_confidence)
-			stored["download_confidence"] = confidence
-			stored["filename_prefix_number"] = track.get("filename_prefix_number") or None
-			stored["filename_prefix_width"] = track.get("filename_prefix_width") or None
-			stored["audio_processing_signature"] = track.get("audio_processing_signature") or None
-			probe = dict(track)
-			probe["playlist"] = playlist.get("name") or "Playlist"
-			downloaded_file = expected_track_path(
-				probe, pathlib.Path(library.get("output_dir") or ""), str(library.get("format") or "mp3"),
-			)
-			if downloaded_file.is_file():
-				old_downloaded = str(stored.get("downloaded_path") or "").strip()
-				if old_downloaded:
-					old_path = pathlib.Path(old_downloaded)
-					output_root = pathlib.Path(library.get("output_dir") or "").resolve()
-					try:
-						old_resolved = old_path.resolve()
-						if old_resolved != downloaded_file.resolve() and old_resolved.is_relative_to(output_root) and old_resolved.is_file():
-							old_resolved.unlink()
-					except (OSError, RuntimeError):
-						pass
-				stored["downloaded_path"] = str(downloaded_file)
-		elif error:
-			stored["last_error"] = str(error).strip()[:4000]
-			stored["last_error_at"] = _now()
-		save_library(path, library)
-		return
+		targets.add((str(track["library_playlist_id"]), int(track.get("library_track_index", -1))))
+	return targets
 
 
-def library_status(library: dict, output_dir: str | pathlib.Path, fmt: str) -> dict:
+def describe_skip(options: list | None, confidence: float | None) -> str:
+	"""Explain a skipped song the way the user needs it: nothing found, or nothing close enough."""
+	if not options:
+		return "No search results on YouTube Music"
+	best = float(confidence or 0.0)
+	return f"No confident match on YouTube Music (best score {best:.2f})"
+
+
+def find_library_track(playlist: dict, track: dict) -> dict | None:
+	"""Return the stored song a download row refers to (by index when still valid, else by identity)."""
+	index = track.get("library_track_index")
+	tracks = playlist.get("tracks", [])
+	key = _track_key(track)
+	if isinstance(index, int) and 0 <= index < len(tracks) and _track_key(tracks[index]) == key:
+		return tracks[index]
+	return next((stored for stored in tracks if _track_key(stored) == key), None)
+
+
+def track_status_counts(
+	track: dict,
+	playlist_name: str,
+	output_dir: str | pathlib.Path,
+	fmt: str,
+	listing_cache: dict | None = None,
+) -> dict[str, int]:
+	"""Count one stored track the way library_status does (enabled/downloaded/missing/redownload).
+
+	A disabled song only counts as "disabled": it is never downloaded, so it is not "missing".
+	"""
+	status = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
+	if not track.get("enabled", True):
+		status["disabled"] += 1
+		return status
+	status["enabled"] += 1
+	probe = dict(track)
+	probe["playlist"] = playlist_name
+	if track.get("force_redownload"):
+		status["redownload"] += 1
+	if library_track_path(probe, pathlib.Path(output_dir), fmt, listing_cache=listing_cache).exists():
+		status["downloaded"] += 1
+	else:
+		status["missing"] += 1
+	return status
+
+
+def adjust_status_counts(status: dict, playlist_key: str, track_index: int, after: dict[str, int]) -> None:
+	"""Replace one track's contribution in a library_status() result without recounting the playlist."""
+	per_track = status.setdefault("track_counts", {}).setdefault(playlist_key, {})
+	before = per_track.get(track_index, {})
+	per_track[track_index] = dict(after)
+	playlist_counts = status.setdefault("playlists", {}).setdefault(playlist_key, {})
+	totals = status.setdefault("totals", {})
+	for field in set(before) | set(after):
+		delta = int(after.get(field, 0)) - int(before.get(field, 0))
+		if delta:
+			playlist_counts[field] = int(playlist_counts.get(field, 0) or 0) + delta
+			totals[field] = int(totals.get(field, 0) or 0) + delta
+
+
+def library_status(
+	library: dict,
+	output_dir: str | pathlib.Path,
+	fmt: str,
+	playlist_ids: set[str] | None = None,
+) -> dict:
 	root = pathlib.Path(output_dir)
 	by_playlist: dict[str, dict] = {}
 	totals = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
+	listing_cache: dict = {}
+	track_counts: dict[str, dict[int, dict[str, int]]] = {}
 	for playlist in library.get("playlists", []):
+		key = _playlist_key(playlist)
+		if playlist_ids is not None and key not in playlist_ids and playlist.get("id") not in playlist_ids:
+			continue
 		status = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
-		for stored in playlist.get("tracks", []):
-			status["enabled"] += 1
-			track = dict(stored)
-			track["playlist"] = playlist.get("name") or "Playlist"
-			if stored.get("force_redownload"):
-				status["redownload"] += 1
-			if library_track_path(track, root, fmt).exists():
-				status["downloaded"] += 1
-			else:
-				status["missing"] += 1
-		by_playlist[_playlist_key(playlist)] = status
-		for key in totals:
-			totals[key] += status[key]
-	return {"totals": totals, "playlists": by_playlist}
+		name = playlist.get("name") or "Playlist"
+		per_track = track_counts.setdefault(key, {})
+		for track_index, stored in enumerate(playlist.get("tracks", [])):
+			counts = track_status_counts(stored, name, root, fmt, listing_cache)
+			per_track[track_index] = counts
+			for field, value in counts.items():
+				status[field] += value
+		by_playlist[key] = status
+		for field in totals:
+			totals[field] += status[field]
+	# track_counts lets the UI move one song between counts without recounting the playlist.
+	return {"totals": totals, "playlists": by_playlist, "track_counts": track_counts}
+
+
+def write_library_m3us(
+	manifest_tracks: list[dict],
+	output_dir: str | pathlib.Path,
+	fmt: str,
+	*,
+	write_m3u8: bool = True,
+	write_m3u_plain: bool = False,
+	m3u_output_dir: str | pathlib.Path | None = None,
+	playlist_names: set[str] | None = None,
+) -> list[pathlib.Path]:
+	"""Write each playlist's M3U with the songs whose file already exists (used during a download, not only at the end)."""
+	root = pathlib.Path(output_dir)
+	by_playlist: dict[str, list[dict]] = {}
+	for track in manifest_tracks:
+		name = str(track.get("playlist") or "Playlist")
+		if playlist_names is not None and name not in playlist_names:
+			continue
+		if expected_track_path(track, root, fmt).exists():
+			by_playlist.setdefault(name, []).append(track)
+	written: list[pathlib.Path] = []
+	output_for_lists = pathlib.Path(m3u_output_dir) if m3u_output_dir else None
+	for name, tracks in by_playlist.items():
+		if write_m3u8:
+			written.append(write_m3u(root, name, tracks, fmt, suffix=".m3u8", encoding="utf-8", playlist_output_dir=output_for_lists))
+		if write_m3u_plain:
+			written.append(write_m3u(root, name, tracks, fmt, suffix=".m3u", encoding="utf-8-sig", playlist_output_dir=output_for_lists))
+	return written
 
 
 def export_csv(path: str | pathlib.Path, library: dict, playlist_ids: set[str] | None = None) -> None:
@@ -508,6 +746,10 @@ def _normalized_track(raw: dict[str, Any], playlist_name: str, position: int) ->
 		track["youtube_video_author"] = raw.get("youtube_video_author") or track["artists"]
 	if raw.get("apple_music_id"):
 		track["apple_music_id"] = raw["apple_music_id"]
+	if raw.get("duration_source"):
+		track["duration_source"] = str(raw["duration_source"])
+	if raw.get("duration_precision_s") not in (None, ""):
+		track["duration_precision_s"] = raw["duration_precision_s"]
 	return track
 
 
@@ -528,8 +770,17 @@ def _track_text_key(track: dict) -> str:
 	return f"{str(track.get('artists') or '').casefold().strip()}|{str(track.get('title') or '').casefold().strip()}"
 
 
-def library_track_path(track: dict, output_dir: str | pathlib.Path, fmt: str) -> pathlib.Path:
-	"""Resolve the file actually downloaded for a library row before its current expected filename."""
+def library_track_path(
+	track: dict,
+	output_dir: str | pathlib.Path,
+	fmt: str,
+	*,
+	listing_cache: dict | None = None,
+) -> pathlib.Path:
+	"""Resolve the file actually downloaded for a library row before its current expected filename.
+
+	Pass the same `listing_cache` dict to many calls in one pass so each playlist folder is listed once.
+	"""
 	stored = str(track.get("downloaded_path") or "").strip()
 	if stored:
 		stored_path = pathlib.Path(stored)
@@ -542,14 +793,25 @@ def library_track_path(track: dict, output_dir: str | pathlib.Path, fmt: str) ->
 	# exact filename suffix, never a fuzzy title match or another format.
 	unprefixed = dict(track, filename_prefix_number=None)
 	plain = expected_track_path(unprefixed, pathlib.Path(output_dir), fmt)
-	try:
-		matches = [
-			path for path in expected.parent.iterdir()
-			if path.is_file() and unicodedata.normalize("NFC", re.sub(r"^\d+- ", "", path.name)) == plain.name
-		]
-	except OSError:
-		matches = []
+	listing = listing_cache.get(expected.parent) if listing_cache is not None else None
+	if listing is None:
+		listing = _unprefixed_listing(expected.parent)
+		if listing_cache is not None:
+			listing_cache[expected.parent] = listing
+	matches = listing.get(plain.name, [])
 	return matches[0] if len(matches) == 1 else expected
+
+
+def _unprefixed_listing(folder: pathlib.Path) -> dict[str, list[pathlib.Path]]:
+	listing: dict[str, list[pathlib.Path]] = {}
+	try:
+		for path in folder.iterdir():
+			if path.is_file():
+				name = unicodedata.normalize("NFC", re.sub(r"^\d+- ", "", path.name))
+				listing.setdefault(name, []).append(path)
+	except OSError:
+		pass
+	return listing
 
 
 def _track_key(track: dict) -> str:

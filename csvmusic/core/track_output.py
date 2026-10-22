@@ -5,6 +5,17 @@ from dataclasses import dataclass
 from csvmusic.core.downloader import sanitize_name
 
 
+SUPPORTED_FORMATS = ("m4a", "mp3", "opus")
+# The one default for a library without a saved "format": Library Mode has always downloaded m4a then.
+DEFAULT_LIBRARY_FORMAT = "m4a"
+
+
+def library_format(library: dict) -> str:
+	"""Return the library's audio format, falling back to the single shared default."""
+	value = str(library.get("format") or "").strip().lower()
+	return value if value in SUPPORTED_FORMATS else DEFAULT_LIBRARY_FORMAT
+
+
 def track_filename_base(track: dict) -> str:
 	"""Return the stable output stem, including an optional playlist-position prefix."""
 	base = f"{track.get('artists', '')} - {track.get('title', '')}"

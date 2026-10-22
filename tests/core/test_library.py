@@ -245,7 +245,8 @@ def test_library_status_uses_real_output_files(tmp_path):
 	path.parent.mkdir(parents=True)
 	path.write_bytes(b"audio")
 	status = library_status(library, tmp_path, "m4a")
-	assert status["totals"] == {"enabled": 2, "downloaded": 1, "missing": 1, "disabled": 0, "redownload": 0}
+	# The disabled song is never downloaded, so it must not count as missing (fork item 1.16).
+	assert status["totals"] == {"enabled": 1, "downloaded": 1, "missing": 0, "disabled": 1, "redownload": 0}
 
 
 def test_successful_replacement_clears_redownload_flag(tmp_path):

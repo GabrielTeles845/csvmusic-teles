@@ -14,7 +14,7 @@
 | 0.1 | Mac pronto, fork criado, app rodando do código | `01` — feito em 22/10/2026 (clone local em `csvmusic-teles/`, Python 3.12, sem repositório no GitHub ainda) |
 | 0.2 | `CLAUDE.md` + `CLAUDE.local.md` no repo | `02` — feito em 22/10/2026 |
 | 0.3 | Rodar `pytest -q` e anotar o resultado (linha de base) | `03 §8` — 287 passando, 0 falhas (22/10/2026) |
-| 0.4 | Identidade do fork: pasta de configurações própria (`CSVMusicTeles`), URL do update desligada/trocada, `bundle_identifier` próprio, versão `1.7.9+teles.0` | `08 §3` |
+| 0.4 | ✓ Identidade do fork: pasta de configurações própria (`CSVMusicTeles`), URL do update desligada/trocada, `bundle_identifier` próprio, versão `1.7.9+teles.0` | `08 §3` — feito em 22/10/2026: na primeira abertura copia (não move) `settings.json`, `library.json` e `youtube-cookies.txt` do CSVMusic original |
 | 0.5 | `ci.yml` rodando `pytest` no macOS a cada push | `03 §9` |
 | 0.6 | `ruff` configurado para TAB (só lint, sem reformatar tudo ainda) | `09 G1` |
 
@@ -36,6 +36,20 @@ O Gabriel tem playlist com mais de 5.000 músicas. Tudo tem que "ir pegando" aos
 | Atualizar a lista de playlists (`_refresh`) | 642 ms | 857 ms |
 
 A cada música baixada a janela congela ~0,5 s, e até ~1,3 s quando também redesenha as playlists. Com 5.000 músicas, só a regravação do arquivo soma ~11 min.
+
+- [x] G.0 **Versão rápida, sem SQLite (22/10/2026):** a Library Mode mantém a biblioteca em memória; cada resultado de download muda só a música na memória, redesenha só a linha dela e a linha da playlist (contagens ajustadas por música, sem recontar) e marca a biblioteca como "suja". O `library.json` é gravado em grupo (no máximo a cada 3 s durante o lote), sempre ao fim do lote e ao fechar, de forma atômica (temporário + `fsync` + `os.replace`). As listas listam cada pasta de playlist uma vez por atualização (antes, uma listagem da pasta inteira por música faltando). Teste: `tests/ui/test_library_mode_downloads.py`.
+
+  Medido em 22/10/2026 com biblioteca falsa de 5.000 músicas (HOME temporário, `library.json` de 2,1 MB, script de medição fora do repositório; mediana de 5 a 10 repetições):
+
+  | | antes, 20 arquivos na pasta | depois, 20 arquivos | antes, 1.000 arquivos na pasta | depois, 1.000 arquivos |
+  |---|---|---|---|---|
+  | 1 resultado de download (tudo o que roda na thread da janela) | 874 ms | 2 ms | 12.732 ms | 2 ms |
+  | Gravar o `library.json` (agora só a cada 3 s ou no fim) | junto acima | 50 ms | junto acima | 50 ms |
+  | Redesenhar a lista (`_show_tracks`, agora só ao trocar de playlist, buscar e no fim do lote) | 712 ms | 324 ms | 12.544 ms | 318 ms |
+  | Atualizar as playlists (`_refresh`) | 1.905 ms | 757 ms | 37.079 ms | 752 ms |
+  | Abrir a janela | 2.027 ms | 887 ms | 36.683 ms | 915 ms |
+
+  Com 1.000 arquivos já baixados e 4.000 faltando, a versão antiga levava ~12 s por música: cada música faltando listava a pasta inteira. Continua lento abrir e redesenhar tudo (~0,3 a 0,9 s): os cartões são widgets; isso é o G.4/7.4.
 
 - [ ] G.1 **Leitura aos poucos:** o leitor do Spotify entrega as faixas em lotes durante a leitura, e a biblioteca grava cada lote (junção segura, item 1.21). Se a leitura parar, o que já veio fica salvo e a próxima continua de onde parou. Junto com a fase 2.
 - [ ] G.2 **Baixar enquanto lê:** o download pode começar com as faixas que já chegaram, sem esperar a leitura acabar. Junto com 4.3.
@@ -68,23 +82,24 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 - [x] 1.14 Timeout no subprocess + parar de verdade no Stop (sem `terminate()`) (`04 bug 13`, `03 §5`) — feito em 22/10/2026: timeout de 600 s; no yt-dlp embutido (mesmo processo) o Stop vale na próxima linha que ele escrever
 
 ### Biblioteca (doc 07)
-- [ ] 1.15 Gravar pulos (`not_found_on_youtube` com motivo e data) (`07 §3.3.1`)
-- [ ] 1.16 Desativadas fora da contagem de missing (+ corrigir o teste) (`07 §3.3.2`)
-- [ ] 1.17 Um único padrão de formato; seletor com opus (`07 §3.3.3`)
-- [ ] 1.18 M3U escrito a cada N faixas, não só no fim (`07 bug 8`)
-- [ ] 1.19 Bloquear "nova análise" durante download (`07 bug 5`)
-- [ ] 1.20 `load_library` com versão diferente **não** pode sobrescrever a biblioteca (backup + erro claro) (`07 bug 18`)
+- [x] 1.15 Gravar pulos (`not_found_on_youtube` com motivo e data) (`07 §3.3.1`) — gravado a partir do resultado que a Library Mode já recebe; a linha mostra "Not found" e o motivo
+- [x] 1.16 Desativadas fora da contagem de missing (+ corrigir o teste) (`07 §3.3.2`)
+- [x] 1.17 Um único padrão de formato; seletor com opus (`07 §3.3.3`) — padrão `m4a` em `track_output.library_format`, usado também no sync de aparelhos
+- [x] 1.18 M3U escrito a cada N faixas, não só no fim (`07 bug 8`) — a cada 10 músicas baixadas, pela Library Mode; o worker continua gravando o final
+- [x] 1.19 Bloquear "nova análise" durante download (`07 bug 5`) — e o contrário: não baixa durante uma análise
+- [x] 1.20 `load_library` com versão diferente **não** pode sobrescrever a biblioteca (backup + erro claro) (`07 bug 18`)
 
 ### Importação (doc 05)
-- [ ] 1.21 `scan_cancelled=True` ao fechar + junção segura (análise parcial não apaga faixas) (`05 §4.4 passo 9`)
+- [x] 1.21 `scan_cancelled=True` ao fechar + junção segura (análise parcial não apaga faixas) (`05 §4.4 passo 9`)
 - [x] 1.22 Capturar a **duração** (`mm:ss`) no leitor do Spotify (`05 §5 item 12`). A linha da página dá `m:ss` (precisão 1 s); a duração em ms do embed (posições 1–100) é mantida e não é trocada pelo `m:ss` (22/10/2026)
 - [x] 1.23 CSV robusto: separador `;`, acentos, colunas em pt/es (Faixa, Artista, Álbum, Duração, Link) (`05 §3.6`) — **resolve o erro do `musicas_curtidas_spotify.csv`**: as 1.124 linhas importam, com álbum e ID do Spotify tirado do `Link` (22/10/2026)
 - [x] 1.24 Flags anti-throttling do Chromium (`05 §4.4 passo 11`), em `core/webengine_env.py`, aplicadas no `app.py` e ao importar o leitor do Spotify (22/10/2026)
+- [x] 1.32 Restrição de idade: a música guarda `failure_kind="age_restricted"` e a linha mostra "Age limit". No fim do lote, a atividade de download mostra quantas foram e um botão que abre o login do YouTube que já existia (ou só liga a sessão salva, se ela estiver desligada); depois que o YouTube confirma a sessão, oferece baixar de novo só essas músicas (22/10/2026)
 - [x] 1.31 Playlist particular: 404 do Spotify vira `SpotifyPlaylistPrivateError` com instrução para tornar pública; antes a análise terminava sem aviso nenhum. Lista mostra "PRIVATE ON SPOTIFY" e o resumo conta as privadas (22/10/2026)
 
 ### Geral
-- [ ] 1.25 Settings: escrita atômica + gravação com atraso (debounce) + backup (`06 §2`, `03 §6`)
-- [ ] 1.26 Log com rotação no lugar certo do Mac (`~/Library/Logs/CSVMusicTeles`) (`03 §6`)
+- [x] 1.25 Settings: escrita atômica + gravação com atraso (debounce) + backup (`06 §2`, `03 §6`)
+- [x] 1.26 Log com rotação no lugar certo do Mac (`~/Library/Logs/CSVMusicTeles`) (`03 §6`)
 
 ### Duração da música (doc 13) — garantir que é a música certa
 - [x] 1.27 CSV lê `Duração`/`Duration (ms)` em `m:ss`, `h:mm:ss`, segundos ou ms; guarda `duration_source` e precisão (`13 §4.1`). Leitura em `core/durations.py`. Falta a biblioteca guardar `duration_source`/`duration_precision_s` (hoje `_normalized_track` descarta) (22/10/2026)

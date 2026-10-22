@@ -18,8 +18,9 @@ Responda em português do Brasil.
 - Ambiente: `source .venv/bin/activate` (Python 3.12 do Homebrew: `/opt/homebrew/bin/python3.12`; o `python3` do sistema é 3.14 e o PySide6 6.8.3 não roda nele)
 - Instalar: `pip install -e . pytest`
 - Rodar app: `python -m csvmusic.app` · só biblioteca: `python -m csvmusic.library_mode_ui`
-- Testes: `QT_QPA_PLATFORM=offscreen python -m pytest -q` (um arquivo: `... pytest tests/core/test_x.py -q`). Linha de base em 22/10/2026: 287 passando; com a playlist privada, 295.
-- Print de tela sem abrir janela: `HOME=<pasta temporária> QT_QPA_PLATFORM=offscreen` e `widget.grab().save(...)`. O `LibraryModeDialog` para no aviso inicial (`_show_startup_disclaimer`, modal), então troque esse método por um que não faz nada no script do print. O HOME temporário evita tocar na biblioteca real (`~/Library/Application Support/CSVMusic/`).
+- Testes: `QT_QPA_PLATFORM=offscreen python -m pytest -q` (um arquivo: `... pytest tests/core/test_x.py -q`). Linha de base em 22/10/2026: 287 passando; com a playlist privada, 295; depois da frente biblioteca/configurações/log, 337. O `tests/conftest.py` aponta `CSVMUSIC_DATA_DIR` e `CSVMUSIC_LOG_DIR` para pastas temporárias: a suíte não lê nem grava a biblioteca, as configurações ou o log reais.
+- Print de tela sem abrir janela: `CSVMUSIC_DATA_DIR=<pasta temporária> CSVMUSIC_LOG_DIR=<pasta temporária> QT_QPA_PLATFORM=offscreen` e `widget.grab().save(...)`. O `LibraryModeDialog` para no aviso inicial (`_show_startup_disclaimer`, modal): no script, use uma subclasse que troca esse método (e `_check_youtube_at_startup`, `_start_update_check`) por um que não faz nada. As duas variáveis evitam tocar na biblioteca e no log reais.
+- Onde ficam os dados do fork: `~/Library/Application Support/CSVMusicTeles/` (configurações, `library.json`) e `~/Library/Logs/CSVMusicTeles/app.log` (com rotação, 5 MB × 4). Na primeira abertura, se a pasta do fork não tem `settings.json` nem `library.json`, o app **copia** (nunca move) `settings.json`, `library.json` e `youtube-cookies.txt` do CSVMusic original (`~/Library/Application Support/CSVMusic/`). Depois disso os dois apps não compartilham nada.
 - Build .app: ver `docs/fork/12-build-e-rodar-sempre-no-mac.md`
 
 ## Estilo de código
@@ -39,8 +40,13 @@ Responda em português do Brasil.
 - Ao terminar um item do roadmap, atualize o checkbox em `docs/fork/10-roadmap.md`.
 
 ## Armadilhas conhecidas
-- Os testes escrevem no log real (`~/.local/share/csvmusic/app.log`); não confunda essas linhas ("Test Playlist", Avril Lavigne) com uso de verdade.
-- Playlist particular no Spotify: sem login, o Spotify devolve 404, igual a playlist apagada. `SpotifyPlaylistPrivateError` (em `core/spotify_import.py`) cobre os dois casos. A biblioteca grava `access_error="private"` e a lista mostra "PRIVATE ON SPOTIFY"; a próxima análise que der certo limpa a marca.
+- O log antigo (`~/.local/share/csvmusic/app.log`) tem linhas de testes ("Test Playlist", Avril Lavigne) de antes do isolamento; o log do fork é `~/Library/Logs/CSVMusicTeles/app.log`.
+- A Library Mode guarda a biblioteca **em memória** e grava o `library.json` agrupado (no máximo a cada 3 s durante um download, sempre no fim do lote e ao fechar). Não abra o modo legado e a Library Mode mexendo na mesma biblioteca ao mesmo tempo: o modo legado grava direto no arquivo e a próxima gravação da Library Mode passa por cima.
+- As configurações também ficam em memória (`core/settings.py`): `save_settings` vale na hora para `load_settings` e grava o arquivo 0,3 s depois (atômico, com `settings.json.bak`). Um script que lê o `settings.json` do disco logo depois de salvar precisa chamar `flush_settings()`.
+- `library.json` de outra versão ou ilegível: o app copia para `library.json.unreadable-<data>.bak`, abre vazio e **não grava** até o arquivo voltar a ser lido.
+- Verificador de atualização desligado (`UPDATE_CHECK_ENABLED = False` em `core/update_check.py`): os lançamentos do original não são atualização deste fork.
+- PySide6 6.8: não troque por `monkeypatch` um método da classe que o código passa para `QTimer.singleShot` (ex.: `_check_youtube_at_startup`); quando o patch é desfeito, o Python cai ao encerrar (segfault no fim da suíte). Use uma subclasse. E nos testes chame `dialog.closeEvent(QCloseEvent())` em vez de `close()`: fechar a última janela pede para o `QApplication` compartilhado sair e quebra os testes de QtWebEngine que vêm depois.
+- Playlist particular no Spotify: sem login, o Spotify devolve 404, igual a playlist apagada. `SpotifyPlaylistPrivateError` (em `core/spotify_import.py`) cobre os dois casos. A biblioteca grava `access_error="private"` e a lista mostra "PRIVATE ON SPOTIFY" (junto com o botão de erros, se houver). Qualquer análise que chegou à playlist limpa a marca, mesmo vindo vazia; uma falha de rede não cria nem apaga a marca.
 - yt-dlp roda in-process no app empacotado (`redirect_stdout` global): não rode dois downloads em paralelo por esse caminho.
 - `sanitize_name` troca `:"?*<>|/\` por caracteres "largos" (：＂？…); nomes de arquivo esperados dependem disso.
 - `track_no` hoje às vezes é posição na playlist, às vezes faixa do álbum.

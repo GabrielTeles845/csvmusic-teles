@@ -17,7 +17,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPixmap, QFontDatabase, QGuiAppl
 
 from csvmusic.core.csv_import import load_csv, tracks_from_csv
 from csvmusic.core.settings import load_settings, save_settings
-from csvmusic.core.update_check import UpdateInfo, should_check_for_updates, update_check_timestamp
+from csvmusic.core.update_check import UpdateInfo, should_check_for_updates, update_check_timestamp, update_checks_enabled
 from csvmusic.core.downloader import sanitize_name, youtube_batch_mitigation, youtube_risk_acknowledgement
 from csvmusic.core.preflight import run_preflight_checks
 from csvmusic.core.output_folder import OutputFolderError, validate_output_folder
@@ -1266,6 +1266,8 @@ class MainWindow(QMainWindow):
 		QTimer.singleShot(1500, self._start_update_check)
 
 	def _start_update_check(self) -> None:
+		if not update_checks_enabled():
+			return
 		if self.update_check_worker is not None and self.update_check_worker.isRunning():
 			return
 		settings = load_settings()
