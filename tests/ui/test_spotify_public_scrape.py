@@ -1,4 +1,5 @@
-from csvmusic.ui.spotify_public_scrape import jittered_scroll_delay_ms, metadata_gap_positions, normalized_capture, ordered_playlist_tracks, recover_single_missing_position
+from csvmusic.core.spotify_import import SpotifyImportError, SpotifyPlaylistPrivateError
+from csvmusic.ui.spotify_public_scrape import baseline_error_kind, jittered_scroll_delay_ms, metadata_gap_positions, normalized_capture, ordered_playlist_tracks, recover_single_missing_position
 
 
 def test_normalized_capture_maps_public_row():
@@ -79,3 +80,8 @@ def test_ambiguous_positionless_tracks_are_not_guessed():
 	recovered = recover_single_missing_position(captured, existing, 2)
 
 	assert all(track["position"] is None for track in recovered)
+
+
+def test_baseline_error_kind_separates_private_from_other_failures():
+	assert baseline_error_kind(SpotifyPlaylistPrivateError()) == "private"
+	assert baseline_error_kind(SpotifyImportError("Spotify took too long to respond.")) == "error"

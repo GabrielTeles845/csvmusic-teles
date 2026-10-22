@@ -1,7 +1,7 @@
 import pathlib
 
 from csvmusic.core.library import (
-	add_playlist_urls, clear_redownload_flag, edit_library_track, enabled_tracks, library_status, load_library, merge_playlist_scan,
+	add_playlist_urls, clear_redownload_flag, edit_library_track, enabled_tracks, library_status, load_library, mark_playlist_access_error, merge_playlist_scan,
 	import_csv_playlist, new_library, record_library_download_result, rename_library_playlist, save_library,
 )
 from csvmusic.core.track_output import expected_track_path
@@ -395,3 +395,26 @@ def test_successful_selected_alternative_removes_superseded_local_file(tmp_path)
 
 	assert not old_file.exists()
 	assert new_file.exists()
+
+
+def test_private_playlist_mark_keeps_tracks_and_clears_on_next_scan():
+	library = new_library()
+	add_playlist_urls(library, [URL])
+	playlist_id = "spotify:611N3KSs459UD5IVPH1ES4"
+	merge_playlist_scan(library, playlist_id, "Playlist", [_track()])
+
+	marked = mark_playlist_access_error(library, "611N3KSs459UD5IVPH1ES4", "private", "Playlist is private.")
+
+	assert marked is library["playlists"][0]
+	assert marked["access_error"] == "private"
+	assert marked["access_error_message"] == "Playlist is private."
+	assert len(marked["tracks"]) == 1
+
+	merge_playlist_scan(library, playlist_id, "Playlist", [_track()])
+
+	assert library["playlists"][0]["access_error"] is None
+	assert library["playlists"][0]["access_error_message"] is None
+
+
+def test_private_mark_ignores_unknown_playlist():
+	assert mark_playlist_access_error(new_library(), "missing", "private", "x") is None

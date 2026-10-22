@@ -5,6 +5,8 @@ import pytest
 
 from csvmusic.core.spotify_import import (
 	SpotifyPlaylistNotFoundError,
+	SpotifyPlaylistPrivateError,
+	fetch_spotify_playlist,
 	parse_spotify_playlist_id,
 	parse_spotify_source,
 	parse_spotify_playlist_page,
@@ -129,7 +131,7 @@ def test_playlist_rows_ignore_album_track_numbers_for_position():
 def test_parse_spotify_playlist_page_missing_playlist_message():
 	state = {"entities": {"items": {}}}
 
-	with pytest.raises(SpotifyPlaylistNotFoundError, match="Could not find playlist. Is it public\\?"):
+	with pytest.raises(SpotifyPlaylistPrivateError, match="private"):
 		parse_spotify_playlist_page(_page(state), "37i9dQZF1DXcBWIGoYBM5M")
 
 
@@ -347,3 +349,33 @@ def test_parse_spotify_embed_playlist_warns_when_exactly_100_tracks():
 	assert "Spotify only let CSVMusic load 100 playlist tracks from this link" in playlist.warning
 	assert "If the original playlist has more tracks than this" in playlist.warning
 	assert "Open TuneMyMusic from CSVMusic" in playlist.warning
+
+
+class _StatusSession:
+	def __init__(self, status_code):
+		self.status_code = status_code
+		self.urls = []
+
+	def get(self, url, **_kwargs):
+		self.urls.append(url)
+		return type("Response", (), {"status_code": self.status_code, "content": b""})()
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+def test_private_playlist_is_reported_as_private(status_code):
+	session = _StatusSession(status_code)
+
+	with pytest.raises(SpotifyPlaylistPrivateError, match="private") as caught:
+		fetch_spotify_playlist("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M", session=session)
+
+	assert "Make public" in str(caught.value)
+	# Private is a "not found" for callers that only know the older error.
+	assert isinstance(caught.value, SpotifyPlaylistNotFoundError)
+	assert len(session.urls) == 1
+
+
+def test_missing_album_is_not_called_private():
+	with pytest.raises(SpotifyPlaylistNotFoundError) as caught:
+		fetch_spotify_playlist("https://open.spotify.com/album/6IV7472Hni7A1ENilCManS", session=_StatusSession(404))
+
+	assert not isinstance(caught.value, SpotifyPlaylistPrivateError)

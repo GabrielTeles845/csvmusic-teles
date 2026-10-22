@@ -21,6 +21,19 @@ class SpotifyPlaylistNotFoundError(SpotifyImportError):
 	pass
 
 
+PRIVATE_PLAYLIST_MESSAGE = (
+	"This Spotify playlist is private, or it was deleted. Spotify only shows public playlists "
+	"to apps that are not signed in. In Spotify, open the playlist, choose ... > Make public, then scan it again."
+)
+
+
+class SpotifyPlaylistPrivateError(SpotifyPlaylistNotFoundError):
+	"""Spotify answered 401/403/404 for a playlist: private and deleted look the same anonymously."""
+
+	def __init__(self, message: str = PRIVATE_PLAYLIST_MESSAGE):
+		super().__init__(message)
+
+
 @dataclass
 class SpotifyPlaylist:
 	id: str
@@ -112,7 +125,7 @@ def _fetch_spotify_source_page(client: requests.Session, url: str, source: Spoti
 		raise SpotifyImportError(f"Could not reach Spotify: {exc}") from exc
 	if resp.status_code in (401, 403, 404):
 		if source.type == "playlist":
-			raise SpotifyPlaylistNotFoundError("Could not find playlist. Is it public?")
+			raise SpotifyPlaylistPrivateError()
 		raise SpotifyPlaylistNotFoundError("Could not find album. Is the link correct?")
 	if resp.status_code >= 400:
 		raise SpotifyImportError(f"Spotify returned HTTP {resp.status_code}. Try again later.")
@@ -176,7 +189,7 @@ def parse_spotify_embed_page(html_text: str, source: SpotifySource) -> SpotifyPl
 def _parse_playlist_state(state: dict[str, Any], playlist_id: str) -> SpotifyPlaylist:
 	playlist = _find_playlist_entity(state, playlist_id)
 	if not playlist:
-		raise SpotifyPlaylistNotFoundError("Could not find playlist. Is it public?")
+		raise SpotifyPlaylistPrivateError()
 	name = _clean_text(playlist.get("name")) or "Spotify Playlist"
 	content = playlist.get("content") if isinstance(playlist.get("content"), dict) else {}
 	items = content.get("items") if isinstance(content.get("items"), list) else []

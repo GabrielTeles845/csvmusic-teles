@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 	QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
-from csvmusic.core.spotify_import import SpotifyImportError, fetch_spotify_playlist, parse_spotify_source
+from csvmusic.core.spotify_import import SpotifyImportError, SpotifyPlaylistPrivateError, fetch_spotify_playlist, parse_spotify_source
 from csvmusic.core.log import log
 
 
@@ -104,8 +104,13 @@ _CAPTURE_SCRIPT = r"""
 """
 
 
+def baseline_error_kind(exc: Exception) -> str:
+	"""Classify a Phase 1 failure so the library can tell a private playlist from a flaky network."""
+	return "private" if isinstance(exc, SpotifyPlaylistPrivateError) else "error"
+
+
 class SpotifyBaselineWorker(QThread):
-	finished_baseline = Signal(bool, object, str)
+	finished_baseline = Signal(bool, object, str, str)
 
 	def __init__(self, url: str, parent=None):
 		super().__init__(parent)
@@ -115,9 +120,9 @@ class SpotifyBaselineWorker(QThread):
 		try:
 			playlist = fetch_spotify_playlist(self.url)
 		except Exception as exc:
-			self.finished_baseline.emit(False, None, str(exc))
+			self.finished_baseline.emit(False, None, str(exc), baseline_error_kind(exc))
 		else:
-			self.finished_baseline.emit(True, playlist, "")
+			self.finished_baseline.emit(True, playlist, "", "")
 
 
 class ScraperWebPage(QWebEnginePage):
@@ -236,6 +241,7 @@ class SpotifyPublicScrapeDialog(QDialog):
 		self.playlist_name = "Spotify Playlist"
 		self.playlist_cover_url: str | None = None
 		self.finish_emitted = False
+		self.baseline_error: dict[str, str] | None = None
 		self.dispose_pending = False
 		self.scroll_multiplier = max(0.25, float(scroll_multiplier))
 		self.minimum_scroll_px = max(100, int(minimum_scroll_px))
@@ -313,6 +319,7 @@ class SpotifyPublicScrapeDialog(QDialog):
 		self.session_id = secrets.token_hex(4)
 		self.playlist_id = source.id
 		self.finish_emitted = False
+		self.baseline_error = None
 		self.tracks.clear()
 		self.table.setRowCount(0)
 		self.iteration = 0
@@ -331,16 +338,24 @@ class SpotifyPublicScrapeDialog(QDialog):
 		)
 		self.status.setText("Phase 1: loading the public embed baseline...")
 		self.baseline_worker = SpotifyBaselineWorker(url, self)
-		self.baseline_worker.finished_baseline.connect(lambda ok, playlist, error: self._baseline_finished(ok, playlist, error, url))
+		self.baseline_worker.finished_baseline.connect(
+			lambda ok, playlist, error, kind, session=self.session_id: self._baseline_finished(ok, playlist, error, url, kind, session=session)
+		)
 		self.baseline_worker.finished.connect(lambda worker=self.baseline_worker: self._baseline_worker_ended(worker))
 		self.baseline_worker.start()
 
-	def _baseline_finished(self, ok: bool, playlist: object, error: str, url: str) -> None:
+	def _baseline_finished(self, ok: bool, playlist: object, error: str, url: str, kind: str = "error", *, session: str | None = None) -> None:
 		if not self.running:
 			return
+		if session is not None and session != self.session_id:
+			# A cancelled playlist's request can answer after the next playlist started on this reused reader.
+			log(f"spotify_public_scrape session={self.session_id} event=stale_baseline_ignored from_session={session}")
+			return
 		if not ok:
-			log(f"spotify_public_scrape session={self.session_id} event=baseline_failed playlist_id={self.playlist_id} error={error}")
-			self._finish(f"Phase 1 failed: {error}")
+			log(f"spotify_public_scrape session={self.session_id} event=baseline_failed playlist_id={self.playlist_id} kind={kind} error={error}")
+			# Without this the library sees an empty, error-free result and says nothing.
+			self.baseline_error = {"error": error, "error_kind": kind or "error"}
+			self._finish(error if kind == "private" else f"Phase 1 failed: {error}")
 			return
 		for playlist_position, track in enumerate(getattr(playlist, "tracks", []), start=1):
 			track_id = str(track.get("sp_id") or "").strip()
@@ -564,6 +579,7 @@ class SpotifyPublicScrapeDialog(QDialog):
 					"message": message,
 					"complete": bool(self.reported_total and len(emitted_tracks) == self.reported_total and not metadata_gaps),
 					"metadata_gap_positions": metadata_gaps,
+					**(self.baseline_error or {}),
 				})
 
 	def _baseline_worker_ended(self, worker: SpotifyBaselineWorker) -> None:

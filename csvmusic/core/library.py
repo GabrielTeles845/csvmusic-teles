@@ -312,6 +312,8 @@ def merge_playlist_scan(
 		"last_scanned_at": _now(),
 		"reported_total": reported_total,
 		"scan_warning": warning,
+		"access_error": None,
+		"access_error_message": None,
 		"cover_url": cover_url or playlist.get("cover_url"),
 		"tracks": merged,
 		"last_diff": {
@@ -320,6 +322,17 @@ def merge_playlist_scan(
 			"unchanged": sum(1 for track in merged if _track_key(track) in previous),
 		},
 	})
+	return playlist
+
+
+def mark_playlist_access_error(library: dict, playlist_id: str, kind: str, message: str) -> dict | None:
+	"""Record why a scan could not read the playlist (e.g. "private") without touching its tracks."""
+	playlist = playlist_by_id(library, playlist_id)
+	if playlist is None:
+		return None
+	playlist["access_error"] = kind
+	playlist["access_error_message"] = message
+	playlist["access_error_at"] = _now()
 	return playlist
 
 

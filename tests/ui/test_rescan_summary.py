@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from csvmusic.ui.library_mode import RescanSummaryDialog
 
@@ -15,4 +15,17 @@ def test_large_rescan_summary_stays_compact():
 	assert dialog.details.toPlainText() == text
 	assert dialog.details.verticalScrollBar().maximum() > 0
 	assert dialog.details.isReadOnly()
+	dialog.close()
+
+
+def test_rescan_summary_counts_private_playlists():
+	app = QApplication.instance() or QApplication([])
+	results = [
+		{"name": "Mine", "error": "private", "private": True},
+		{"name": "Flaky", "error": "timeout"},
+		{"name": "Ok"},
+	]
+	dialog = RescanSummaryDialog(results, "details")
+	heading = dialog.findChildren(QLabel)[0].text()
+	assert "2 failed (1 private on Spotify)" in heading
 	dialog.close()

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from csvmusic.core.library import (
 	add_playlist_urls, edit_library_track, enabled_tracks, export_csv, library_status, library_track_path, load_library,
-	import_csv_playlist, merge_playlist_scan, new_library, playlist_by_id, record_library_download_result,
+	import_csv_playlist, mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id, record_library_download_result,
 	rename_library_playlist, save_library,
 )
 from csvmusic.core.log import log
@@ -473,7 +473,9 @@ class RescanSummaryDialog(QDialog):
 		layout = QVBoxLayout(self)
 		failed = sum(bool(result.get("error")) for result in results)
 		warnings = sum(bool(result.get("warning")) for result in results)
-		heading = QLabel(f"{len(results)} playlists scanned · {failed} failed · {warnings} warnings")
+		private = sum(bool(result.get("private")) for result in results)
+		private_note = f" ({private} private on Spotify)" if private else ""
+		heading = QLabel(f"{len(results)} playlists scanned · {failed} failed{private_note} · {warnings} warnings")
 		heading.setWordWrap(True)
 		layout.addWidget(heading)
 		self.details = QPlainTextEdit()
@@ -2331,7 +2333,8 @@ class LibraryModeDialog(QDialog):
 				lines = []
 				for result in self.scan_results:
 					if result.get("error"):
-						lines.append(f"✗ {result['name']}\n  Failed: {result['error']}")
+						label = "Private on Spotify" if result.get("private") else "Failed"
+						lines.append(f"✗ {result['name']}\n  {label}: {result['error']}")
 						continue
 					diff = result.get("diff") or {}
 					captured = result.get("captured", 0)
@@ -2413,10 +2416,18 @@ class LibraryModeDialog(QDialog):
 
 	def _scan_finished(self, result: object) -> None:
 		data = dict(result or {})
+		playlist_id = str(data.get("id") or "")
 		if data.get("error"):
 			self.scan_warnings.append(str(data["error"]))
-			self.scan_results.append({"name": self.current_scan_name or "Playlist", "error": str(data["error"])})
-		playlist_id = str(data.get("id") or "")
+			self.scan_results.append({
+				"name": self.current_scan_name or "Playlist",
+				"error": str(data["error"]),
+				"private": data.get("error_kind") == "private",
+			})
+			if data.get("error_kind") == "private" and playlist_id and not self.scan_cancelled:
+				if mark_playlist_access_error(self.library, playlist_id, "private", str(data["error"])):
+					self._save()
+				log(f"library playlist scan private id={playlist_id}")
 		if not self.scan_cancelled and playlist_id and data.get("tracks"):
 			message = str(data.get("message") or "")
 			warning = None if data.get("complete") else message
@@ -2671,9 +2682,10 @@ class LibraryModeDialog(QDialog):
 			missing_count = int(counts.get("missing", 0) or 0)
 			redownload_count = int(counts.get("redownload", 0) or 0)
 			unscanned = not bool(playlist.get("last_scanned_at"))
+			is_private = playlist.get("access_error") == "private"
 			incomplete_scan = bool(playlist.get("scan_warning")) or bool(total and track_count < total)
-			item.setSizeHint(0, QSize(0, 78 if unscanned or incomplete_scan or redownload_count else 68))
-			if unscanned:
+			item.setSizeHint(0, QSize(0, 78 if unscanned or is_private or incomplete_scan or redownload_count else 68))
+			if unscanned or is_private:
 				row_color = QColor("#e08080")
 			elif incomplete_scan:
 				row_color = QColor("#f0cf82")
@@ -2717,6 +2729,11 @@ class LibraryModeDialog(QDialog):
 			if unscanned:
 				tracks_label.setStyleSheet("color: #700000; font-weight: bold; background: #ffd0a0; border: 1px solid #904000; padding: 3px;")
 			status_labels = [tracks_label]
+			if is_private:
+				private_label = QLabel("PRIVATE ON SPOTIFY\nMake public, then ↻")
+				private_label.setStyleSheet("color: #700000; font-weight: bold; background: #ffd0a0; border: 1px solid #904000; padding: 3px;")
+				private_label.setToolTip(str(playlist.get("access_error_message") or "Spotify did not show this playlist. Make it public in Spotify, then rescan."))
+
 			scan_label = QLabel("INCOMPLETE SCAN") if incomplete_scan else None
 			missing_label = QLabel(f"{missing_count} missing") if missing_count else None
 			redownload_label = QLabel(f"{redownload_count} queued") if redownload_count else None
@@ -2731,8 +2748,11 @@ class LibraryModeDialog(QDialog):
 				status_labels.append(redownload_label)
 			if error_label:
 				status_labels.append(error_label)
+			if is_private:
+				# Counts from an older scan would only crowd out the one thing to fix.
+				status_labels = [private_label]
 			for status_label in status_labels:
-				_configure_playlist_status_widget(status_label, unscanned=unscanned)
+				_configure_playlist_status_widget(status_label, unscanned=unscanned or is_private)
 			for status_label in status_labels:
 				status_layout.addWidget(status_label)
 			if error_count:
@@ -2743,9 +2763,10 @@ class LibraryModeDialog(QDialog):
 			playlist_status = QLabel()
 			playlist_status.setFixedSize(26, 26)
 			playlist_status.setAlignment(Qt.AlignCenter)
-			playlist_status.setPixmap(_song_status_icon("warning" if unscanned or incomplete_scan or error_count or missing_count or redownload_count else "downloaded").pixmap(24, 24))
+			playlist_status.setPixmap(_song_status_icon("warning" if unscanned or is_private or incomplete_scan or error_count or missing_count or redownload_count else "downloaded").pixmap(24, 24))
 			playlist_status.setToolTip(
 				"This playlist has not been scanned. Press the green refresh button." if unscanned
+				else str(playlist.get("access_error_message") or "This playlist is private on Spotify.") if is_private
 				else str(playlist.get("scan_warning") or "The playlist scan was incomplete. Rescan it.") if incomplete_scan
 				else "One or more songs have download errors" if error_count
 				else f"{missing_count} song(s) have no downloaded file" if missing_count
