@@ -1,3 +1,4 @@
+import pytest
 from csvmusic.core import downloader
 import unicodedata
 
@@ -195,3 +196,39 @@ def test_write_m3u_uses_relative_media_paths_from_custom_folder(tmp_path):
 
 	assert path == playlist_dir / "Mix.m3u8"
 	assert path.read_text(encoding="utf-8").splitlines()[-1] == "../Music/Mix/Artist - Song.mp3"
+
+
+@pytest.mark.parametrize("download", [downloader.download_mp3, downloader.download_m4a, downloader.download_opus])
+def test_bot_check_in_raw_stderr_is_detected_and_stops_attempts(monkeypatch, tmp_path, download):
+	calls = []
+	def fail(args):
+		calls.append(args)
+		return 1, "", "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies"
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", fail)
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with pytest.raises(downloader.YouTubeRiskError) as error:
+		download("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert error.value.reason == "YouTube asked for bot verification"
+	assert len(calls) == 1
+
+
+def test_rate_limit_on_first_attempt_is_not_masked_by_later_errors(monkeypatch, tmp_path):
+	answers = iter([
+		(1, "", "ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests"),
+	] + [(1, "", "ERROR: Video unavailable")] * 30)
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", lambda _args: next(answers))
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with pytest.raises(downloader.YouTubeRiskError) as error:
+		downloader.download_m4a("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert error.value.reason == "YouTube returned HTTP 429"
+
+
+def test_plain_failures_keep_details_from_every_attempt(monkeypatch, tmp_path):
+	answers = iter([(1, "", "ERROR: first problem")] + [(1, "", "ERROR: last problem")] * 30)
+	monkeypatch.setattr(downloader, "_run_ytdlp_module", lambda _args: next(answers))
+	monkeypatch.setattr(downloader, "ytdlp_js_runtime_args", lambda _bin: [])
+	with pytest.raises(downloader.DownloadError) as error:
+		downloader.download_opus("video", tmp_path, "Artist - Song", yt_dlp_bin=downloader.INTERNAL_YTDLP)
+	assert not isinstance(error.value, downloader.YouTubeRiskError)
+	assert "first problem" in str(error.value)
+	assert "last problem" in str(error.value)

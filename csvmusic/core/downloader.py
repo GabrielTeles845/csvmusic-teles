@@ -38,6 +38,14 @@ class AgeRestrictedError(DownloadError):
 	"""The selected video needs an eligible authenticated YouTube session."""
 
 
+class YouTubeRiskError(DownloadError):
+	"""YouTube signalled rate limiting or bot verification; other clients and candidates will fail too."""
+
+	def __init__(self, message: str, reason: str):
+		super().__init__(message)
+		self.reason = reason
+
+
 def is_age_restriction_error(message: str) -> bool:
 	text = message.lower()
 	return any(marker in text for marker in (
@@ -303,7 +311,41 @@ def _run_ytdlp_detail(cmd: list[str]) -> tuple[int, str]:
 		# Preserve the actionable error instead of masking it with later client,
 		# format, or search failures (or downloading a different video).
 		raise AgeRestrictedError(detail)
+	# A detecção roda na saída crua: o resumo reescreve o aviso de robô e
+	# nenhum padrão casaria depois disso.
+	risk = detect_youtube_risk(f"{stderr}\n{stdout}")
+	if risk:
+		raise YouTubeRiskError(f"{risk}: {detail}", risk)
 	return rc, detail
+
+
+def _join_attempt_details(details: list[str]) -> str:
+	unique: list[str] = []
+	for detail in details:
+		if detail and detail not in unique:
+			unique.append(detail)
+	if not unique:
+		return "no yt-dlp attempts recorded"
+	return " || ".join(unique[-3:])
+
+
+def _run_ytdlp_attempts(attempts: list[tuple[list[str], str]], *, label: str, video_id: str) -> None:
+	"""Run yt-dlp attempts in order until one succeeds.
+
+	Age restriction and YouTube risk signals stop the sequence at once: trying
+	the remaining clients would only send more requests to a session that is
+	already being blocked. Every failure detail is kept for the final error.
+	"""
+	details: list[str] = []
+	for cmd, description in attempts:
+		rc, detail = _run_ytdlp_detail(cmd)
+		if rc == 0:
+			log(f"{label}: {description} succeeded video_id={video_id}")
+			return
+		details.append(detail)
+		log(f"{label}: {description} failed video_id={video_id}")
+	log(f"{label}: all yt-dlp attempts failed video_id={video_id}")
+	raise DownloadError(f"yt-dlp failed for {label.removeprefix('download_')}: {_join_attempt_details(details)}")
 
 
 def _youtube_clients(cookie_args: list[str]) -> list[str | None]:
@@ -675,44 +717,17 @@ def download_m4a(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dlp
 		"--fragment-retries", "5",
 		"--socket-timeout", "30",
 	]
-	success = False
-	last_detail = "no yt-dlp attempts recorded"
+	attempts: list[tuple[list[str], str]] = []
 	for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
 		for client in _youtube_clients(cookies_args):
 			extractor_args = _extractor_args(client)
-			cmd_primary = primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url]
-			rc, detail = _run_ytdlp_detail(cmd_primary)
-			if rc == 0:
-				success = True
-				log(f"download_m4a: primary succeeded video_id={video_id} client={client} url={base_url}")
-				break
-			last_detail = detail
-			log(f"download_m4a: primary failed video_id={video_id} client={client} url={base_url}")
-			cmd_fallback = fallback_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url]
-			rc, detail = _run_ytdlp_detail(cmd_fallback)
-			if rc == 0:
-				success = True
-				log(f"download_m4a: fallback succeeded video_id={video_id} client={client} url={base_url}")
-				break
-			last_detail = detail
-			log(f"download_m4a: fallback failed video_id={video_id} client={client} url={base_url}")
-		if success:
-			break
-	if not success:
-		search_url = f"ytsearch1:{base_name}"
-		for client in _youtube_clients(cookies_args):
-			extractor_args = _extractor_args(client)
-			cmd_search = primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, search_url]
-			rc, detail = _run_ytdlp_detail(cmd_search)
-			if rc == 0:
-				success = True
-				log(f"download_m4a: search fallback succeeded query='{base_name}' client={client}")
-				break
-			last_detail = detail
-			log(f"download_m4a: search fallback failed query='{base_name}' client={client}")
-	if not success:
-		log(f"download_m4a: all extractor clients failed video_id={video_id} base='{base_name}'")
-		raise DownloadError(f"yt-dlp failed for m4a: {last_detail}")
+			attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"primary client={client} url={base_url}"))
+			attempts.append((fallback_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"fallback client={client} url={base_url}"))
+	search_url = f"ytsearch1:{base_name}"
+	for client in _youtube_clients(cookies_args):
+		extractor_args = _extractor_args(client)
+		attempts.append((primary_base + extractor_args + js_runtime_args + cookies_args + ["-o", out_tpl, search_url], f"search fallback query='{base_name}' client={client}"))
+	_run_ytdlp_attempts(attempts, label="download_m4a", video_id=video_id)
 
 	# What got written?
 	cands = _list_downloads(dst_dir, safe_base)
@@ -744,21 +759,11 @@ def download_opus(video_id: str, dst_dir: pathlib.Path, base_name: str, *, yt_dl
 		"--fragment-retries", "5",
 		"--socket-timeout", "30",
 	]
-	success = False
-	last_detail = "no yt-dlp attempts recorded"
+	attempts: list[tuple[list[str], str]] = []
 	for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
 		for client in _youtube_clients(cookies_args):
-			cmd = cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", out_tpl, base_url]
-			rc, detail = _run_ytdlp_detail(cmd)
-			if rc == 0:
-				success = True
-				log(f"download_opus: yt-dlp succeeded video_id={video_id} client={client} url={base_url}")
-				break
-			last_detail = detail
-		if success:
-			break
-	if not success:
-		raise DownloadError(f"yt-dlp failed for opus: {last_detail}")
+			attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", out_tpl, base_url], f"client={client} url={base_url}"))
+	_run_ytdlp_attempts(attempts, label="download_opus", video_id=video_id)
 	candidates = _list_downloads(dst_dir, safe_base)
 	if not candidates:
 		raise DownloadError("downloaded Opus file not found")
@@ -799,36 +804,14 @@ def download_mp3(video_id: str, dst_dir: pathlib.Path, base_name: str, cbr_320: 
 		"--fragment-retries", "5",
 		"--socket-timeout", "30",
 	]
-	success = False
-	last_detail = "no yt-dlp attempts recorded"
+	attempts: list[tuple[list[str], str]] = []
 	for base_url in (YTM_URL.format(vid=video_id), YT_URL.format(vid=video_id)):
 		for client in _youtube_clients(cookies_args):
-			extractor_args = _extractor_args(client)
-			cmd = cmd_base + extractor_args + js_runtime_args + cookies_args + ["-o", str(tmp), base_url]
-			rc, detail = _run_ytdlp_detail(cmd)
-			if rc == 0:
-				success = True
-				log(f"download_mp3: yt-dlp succeeded video_id={video_id} client={client} url={base_url}")
-				break
-			last_detail = detail
-			log(f"download_mp3: yt-dlp attempt failed video_id={video_id} client={client} url={base_url}")
-		if success:
-			break
-	if not success:
-		search_url = f"ytsearch1:{base_name}"
-		for client in _youtube_clients(cookies_args):
-			extractor_args = _extractor_args(client)
-			cmd = cmd_base + extractor_args + js_runtime_args + cookies_args + ["-o", str(tmp), search_url]
-			rc, detail = _run_ytdlp_detail(cmd)
-			if rc == 0:
-				success = True
-				log(f"download_mp3: search fallback succeeded query='{base_name}' client={client}")
-				break
-			last_detail = detail
-			log(f"download_mp3: search fallback failed query='{base_name}' client={client}")
-	if not success:
-		log(f"download_mp3: yt-dlp initial fetch failed video_id={video_id} base='{base_name}'")
-		raise DownloadError(f"yt-dlp failed for mp3 temp: {last_detail}")
+			attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), base_url], f"client={client} url={base_url}"))
+	search_url = f"ytsearch1:{base_name}"
+	for client in _youtube_clients(cookies_args):
+		attempts.append((cmd_base + _extractor_args(client) + js_runtime_args + cookies_args + ["-o", str(tmp), search_url], f"search fallback query='{base_name}' client={client}"))
+	_run_ytdlp_attempts(attempts, label="download_mp3", video_id=video_id)
 
 	# yt-dlp may append extension to .tmp; find it
 	src = None

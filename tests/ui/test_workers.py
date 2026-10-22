@@ -203,3 +203,34 @@ def test_redownload_rewrites_m3u_from_complete_existing_manifest(monkeypatch, tm
 	worker.run()
 
 	assert [[track["title"] for track in tracks] for tracks in written] == [["Existing Song", "Complicated"]]
+
+
+def test_bot_check_switches_to_safe_mode_and_retries(monkeypatch, tmp_path):
+	from csvmusic.core.downloader import YouTubeRiskError, YOUTUBE_MITIGATION_AGGRESSIVE
+	worker = _pipeline(tmp_path, force_download=False)
+	worker.tracks_override[0]["preferred_video_id"] = "selected-video"
+	results = []
+	warnings = []
+	profiles = []
+	worker.sig_track_result.connect(lambda _row, payload: results.append(payload))
+	worker.sig_warning.connect(warnings.append)
+	monkeypatch.setattr(workers, "YTMusic", lambda: object())
+	monkeypatch.setattr(workers, "cover_art_url_bytes", lambda _url: None)
+	monkeypatch.setattr(workers, "yt_thumbnail_bytes", lambda _video_id: None)
+	monkeypatch.setattr(workers, "tag_file", lambda *_args, **_kwargs: None)
+	monkeypatch.setattr(workers.time, "sleep", lambda _seconds: None)
+
+	def fake_download(_video_id, destination, base_name, profile, **_kwargs):
+		profiles.append(profile.label)
+		if len(profiles) == 1:
+			raise YouTubeRiskError("YouTube asked for bot verification: Try Firefox cookies", "YouTube asked for bot verification")
+		path = destination / f"{base_name}.mp3"
+		path.write_bytes(b"audio")
+		return path
+
+	monkeypatch.setattr(worker, "_download_with_profile", fake_download)
+	worker.run()
+
+	assert profiles == ["normal", YOUTUBE_MITIGATION_AGGRESSIVE.label]
+	assert results[0]["downloaded"] is True
+	assert len(warnings) == 1 and "YouTube asked for bot verification" in warnings[0]

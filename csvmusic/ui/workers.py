@@ -16,7 +16,7 @@ from csvmusic.core.ytmusic_match import find_best, more_candidates, RATE_LIMIT_S
 from csvmusic.core.downloader import (
 	download_m4a, download_mp3, download_opus, tag_file, yt_thumbnail_bytes, cover_art_url_bytes, write_m3u, sanitize_name,
 	youtube_batch_mitigation, build_ytdlp_mitigation_args, detect_youtube_risk,
-	YOUTUBE_MITIGATION_NONE, YOUTUBE_MITIGATION_AGGRESSIVE, YouTubeMitigationProfile, AgeRestrictedError
+	YOUTUBE_MITIGATION_NONE, YOUTUBE_MITIGATION_AGGRESSIVE, YouTubeMitigationProfile, AgeRestrictedError, YouTubeRiskError
 )
 from csvmusic.core.paths import ytdlp_path as _resolve_ytdlp, INTERNAL_YTDLP
 from csvmusic.core.subprocess_env import subprocess_kwargs
@@ -472,7 +472,7 @@ class PipelineWorker(QThread):
 							tag_file(fp, t, cover if self.embed_art else None, cover_size=_legacy_cover_size(self.legacy_options, embed_art=self.embed_art))
 							payload["match"] = candidate
 							break
-						except AgeRestrictedError:
+						except (AgeRestrictedError, YouTubeRiskError):
 							raise
 						except Exception as candidate_exc:
 							last_err = str(candidate_exc)
@@ -485,7 +485,7 @@ class PipelineWorker(QThread):
 					done_tracks.append(t)
 				except Exception as e:
 					err = str(e)
-					risk_reason = detect_youtube_risk(err)
+					risk_reason = e.reason if isinstance(e, YouTubeRiskError) else detect_youtube_risk(err)
 					retried = False
 					if risk_reason and self._mitigation.label != YOUTUBE_MITIGATION_AGGRESSIVE.label:
 						self._apply_mitigation(YOUTUBE_MITIGATION_AGGRESSIVE, risk_reason)
@@ -508,7 +508,7 @@ class PipelineWorker(QThread):
 									tag_file(fp, t, cover if self.embed_art else None, cover_size=_legacy_cover_size(self.legacy_options, embed_art=self.embed_art))
 									payload["match"] = candidate
 									break
-								except AgeRestrictedError:
+								except (AgeRestrictedError, YouTubeRiskError):
 									raise
 								except Exception as retry_candidate_exc:
 									last_retry_err = str(retry_candidate_exc)
