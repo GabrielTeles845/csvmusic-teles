@@ -226,7 +226,16 @@ def main() -> int:
 	window.show()
 	QTimer.singleShot(1000, engine.start_session_check)
 	log(f"CSVMusic {APP_VERSION} started web interface url={server.url}")
-	return app.exec()
+	code = app.exec()
+	from csvmusic.engine.engine import lingering_workers
+	if lingering_workers():
+		# A biblioteca e os ajustes já foram gravados. Desmontar o Python com a thread do worker ainda
+		# rodando apaga o QThread e o processo cai ("Destroyed while thread is still running").
+		log(f"CSVMusic exiting with {len(lingering_workers())} worker(s) still running; skipping interpreter teardown")
+		sys.stdout.flush()
+		sys.stderr.flush()
+		os._exit(code)
+	return code
 
 
 if __name__ == "__main__":

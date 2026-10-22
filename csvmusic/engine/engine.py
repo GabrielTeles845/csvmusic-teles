@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QCoreApplication, QObject, QTimer
 
 from csvmusic.core.downloader import sanitize_name, tag_file, write_m3u, youtube_batch_mitigation, youtube_risk_acknowledgement
 from csvmusic.core.library import (
@@ -105,6 +105,15 @@ class NullHost:
 
 	def reveal_path(self, path: str) -> bool:
 		return False
+
+
+# Workers que não pararam ao fechar o app. Ficam aqui (sem pai) até o processo acabar: um QThread
+# apagado com a thread rodando derruba o app ("QThread: Destroyed while thread is still running").
+_LINGERING_WORKERS: list = []
+
+
+def lingering_workers() -> list:
+	return _LINGERING_WORKERS
 
 
 def _now_local() -> datetime.datetime:
@@ -1822,25 +1831,37 @@ class Engine(QObject):
 
 	# --- fechar ------------------------------------------------------------------------
 
-	def shutdown(self, wait_ms: int = 10000) -> None:
+	def _wait_worker(self, worker, name: str, wait_ms: int, extra_wait_ms: int) -> None:
+		if worker is None or not worker.isRunning():
+			return
+		if worker.wait(wait_ms):
+			return
+		log(f"engine shutdown: {name} worker still running after {wait_ms} ms; waiting {extra_wait_ms} ms more")
+		if worker.wait(extra_wait_ms):
+			return
+		log(f"engine shutdown: {name} worker did not stop; keeping it alive until the process exits")
+		worker.setParent(None)
+		_LINGERING_WORKERS.append(worker)
+
+	def shutdown(self, wait_ms: int = 10000, extra_wait_ms: int = 20000) -> None:
 		"""Fechar o app: para o download, cancela a análise, grava a biblioteca e as configurações."""
 		if self.download_worker is not None and self.download_worker.isRunning():
 			self.download_stopping = True
 			self.download_worker.stop()
-			self.download_worker.wait(wait_ms)
-		if self.single_worker is not None and self.single_worker.isRunning():
-			self.single_worker.wait(wait_ms)
+		self._wait_worker(self.download_worker, "download", wait_ms, extra_wait_ms)
+		self._wait_worker(self.single_worker, "single download", wait_ms, extra_wait_ms)
 		if self.scan_running():
 			# Marca cancelado antes: o leitor entrega o resultado parcial na hora, e ele não pode ser gravado.
 			self.scan_cancelled = True
 			self.scan_queue.clear()
 			if self.scraper is not None and getattr(self.scraper, "running", False):
 				self.scraper._finish("Library scan cancelled because CSVMusic was closed.")
-		if self.direct_worker is not None and self.direct_worker.isRunning():
-			self.direct_worker.wait(wait_ms)
-		for worker in (self.session_worker, self.device_worker):
-			if worker is not None and worker.isRunning():
-				worker.wait(wait_ms)
+		self._wait_worker(self.direct_worker, "scan", wait_ms, extra_wait_ms)
+		self._wait_worker(self.session_worker, "session", wait_ms, extra_wait_ms)
+		self._wait_worker(self.device_worker, "device", wait_ms, extra_wait_ms)
+		# O que os workers emitiram antes de parar (o resultado da última música, o fim do lote) ainda
+		# está na fila do Qt: aplica na biblioteca antes de gravar.
+		QCoreApplication.sendPostedEvents()
 		self._job_timer.stop()
 		self.save()
 		flush_settings()
