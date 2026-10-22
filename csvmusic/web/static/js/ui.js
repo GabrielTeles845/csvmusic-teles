@@ -38,7 +38,13 @@ export function dialogo({ titulo, corpo = "", pe = "", largo = false, aoFechar, 
 	const corpoEl = caixa.querySelector(".dlg-corpo");
 	const peEl = caixa.querySelector(".dlg-pe");
 	if (typeof corpo === "string") corpoEl.innerHTML = corpo; else corpoEl.append(corpo);
-	if (peEl) { if (typeof pe === "string") peEl.innerHTML = pe; else peEl.append(pe); if (!pe) peEl.remove(); }
+	if (peEl) {
+		if (typeof pe === "string") peEl.innerHTML = pe; else peEl.append(pe);
+		if (!pe) peEl.remove();
+		// Botões do pé num grupo de colunas iguais: mesma largura, mesma altura.
+		const botoes = [...peEl.querySelectorAll(":scope > .btn")];
+		if (botoes.length) { const g = el(`<div class="pe-botoes"></div>`); g.append(...botoes); peEl.append(g); }
+	}
 	let fechado = false;
 	const tirar = empilhar(() => fechar());
 	function fechar() {
