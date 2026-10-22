@@ -14,7 +14,7 @@
 | 0.1 | Mac pronto, fork criado, app rodando do código | `01` — feito em 22/10/2026 (clone local em `csvmusic-teles/`, Python 3.12, sem repositório no GitHub ainda) |
 | 0.2 | `CLAUDE.md` + `CLAUDE.local.md` no repo | `02` — feito em 22/10/2026 |
 | 0.3 | Rodar `pytest -q` e anotar o resultado (linha de base) | `03 §8` — 287 passando, 0 falhas (22/10/2026) |
-| 0.4 | Identidade do fork: pasta de configurações própria (`CSVMusicTeles`), URL do update desligada/trocada, `bundle_identifier` próprio, versão `1.7.9+teles.0` | `08 §3` |
+| 0.4 | ✓ Identidade do fork: pasta de configurações própria (`CSVMusicTeles`), URL do update desligada/trocada, `bundle_identifier` próprio, versão `1.7.9+teles.0` | `08 §3` — feito em 22/10/2026: na primeira abertura copia (não move) `settings.json`, `library.json` e `youtube-cookies.txt` do CSVMusic original |
 | 0.5 | `ci.yml` rodando `pytest` no macOS a cada push | `03 §9` |
 | 0.6 | `ruff` configurado para TAB (só lint, sem reformatar tudo ainda) | `09 G1` |
 
@@ -82,23 +82,24 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 - [ ] 1.14 Timeout no subprocess + parar de verdade no Stop (sem `terminate()`) (`04 bug 13`, `03 §5`)
 
 ### Biblioteca (doc 07)
-- [ ] 1.15 Gravar pulos (`not_found_on_youtube` com motivo e data) (`07 §3.3.1`)
-- [ ] 1.16 Desativadas fora da contagem de missing (+ corrigir o teste) (`07 §3.3.2`)
-- [ ] 1.17 Um único padrão de formato; seletor com opus (`07 §3.3.3`)
-- [ ] 1.18 M3U escrito a cada N faixas, não só no fim (`07 bug 8`)
-- [ ] 1.19 Bloquear "nova análise" durante download (`07 bug 5`)
-- [ ] 1.20 `load_library` com versão diferente **não** pode sobrescrever a biblioteca (backup + erro claro) (`07 bug 18`)
+- [x] 1.15 Gravar pulos (`not_found_on_youtube` com motivo e data) (`07 §3.3.1`) — gravado a partir do resultado que a Library Mode já recebe; a linha mostra "Not found" e o motivo
+- [x] 1.16 Desativadas fora da contagem de missing (+ corrigir o teste) (`07 §3.3.2`)
+- [x] 1.17 Um único padrão de formato; seletor com opus (`07 §3.3.3`) — padrão `m4a` em `track_output.library_format`, usado também no sync de aparelhos
+- [x] 1.18 M3U escrito a cada N faixas, não só no fim (`07 bug 8`) — a cada 10 músicas baixadas, pela Library Mode; o worker continua gravando o final
+- [x] 1.19 Bloquear "nova análise" durante download (`07 bug 5`) — e o contrário: não baixa durante uma análise
+- [x] 1.20 `load_library` com versão diferente **não** pode sobrescrever a biblioteca (backup + erro claro) (`07 bug 18`)
 
 ### Importação (doc 05)
-- [ ] 1.21 `scan_cancelled=True` ao fechar + junção segura (análise parcial não apaga faixas) (`05 §4.4 passo 9`)
+- [x] 1.21 `scan_cancelled=True` ao fechar + junção segura (análise parcial não apaga faixas) (`05 §4.4 passo 9`)
 - [ ] 1.22 Capturar a **duração** (`mm:ss`) no leitor do Spotify (`05 §5 item 12`)
 - [ ] 1.23 CSV robusto: separador `;`, acentos, colunas em pt/es (Faixa, Artista, Álbum, Duração, Link) (`05 §3.6`) — **resolve o erro do `musicas_curtidas_spotify.csv`**
 - [ ] 1.24 Flags anti-throttling do Chromium (`05 §4.4 passo 11`)
+- [x] 1.32 Restrição de idade: a música guarda `failure_kind="age_restricted"` e a linha mostra "Age limit". No fim do lote, a atividade de download mostra quantas foram e um botão que abre o login do YouTube que já existia (ou só liga a sessão salva, se ela estiver desligada); depois que o YouTube confirma a sessão, oferece baixar de novo só essas músicas (22/10/2026)
 - [x] 1.31 Playlist particular: 404 do Spotify vira `SpotifyPlaylistPrivateError` com instrução para tornar pública; antes a análise terminava sem aviso nenhum. Lista mostra "PRIVATE ON SPOTIFY" e o resumo conta as privadas (22/10/2026)
 
 ### Geral
-- [ ] 1.25 Settings: escrita atômica + gravação com atraso (debounce) + backup (`06 §2`, `03 §6`)
-- [ ] 1.26 Log com rotação no lugar certo do Mac (`~/Library/Logs/CSVMusicTeles`) (`03 §6`)
+- [x] 1.25 Settings: escrita atômica + gravação com atraso (debounce) + backup (`06 §2`, `03 §6`)
+- [x] 1.26 Log com rotação no lugar certo do Mac (`~/Library/Logs/CSVMusicTeles`) (`03 §6`)
 
 ### Duração da música (doc 13) — garantir que é a música certa
 - [ ] 1.27 CSV lê `Duração`/`Duration (ms)` em `m:ss`, `h:mm:ss`, segundos ou ms; guarda `duration_source` e precisão (`13 §4.1`) — fazer junto com 1.23
