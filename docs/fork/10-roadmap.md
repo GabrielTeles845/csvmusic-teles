@@ -37,6 +37,20 @@ O Gabriel tem playlist com mais de 5.000 músicas. Tudo tem que "ir pegando" aos
 
 A cada música baixada a janela congela ~0,5 s, e até ~1,3 s quando também redesenha as playlists. Com 5.000 músicas, só a regravação do arquivo soma ~11 min.
 
+- [x] G.0 **Versão rápida, sem SQLite (22/10/2026):** a Library Mode mantém a biblioteca em memória; cada resultado de download muda só a música na memória, redesenha só a linha dela e a linha da playlist (contagens ajustadas por música, sem recontar) e marca a biblioteca como "suja". O `library.json` é gravado em grupo (no máximo a cada 3 s durante o lote), sempre ao fim do lote e ao fechar, de forma atômica (temporário + `fsync` + `os.replace`). As listas listam cada pasta de playlist uma vez por atualização (antes, uma listagem da pasta inteira por música faltando). Teste: `tests/ui/test_library_mode_downloads.py`.
+
+  Medido em 22/10/2026 com biblioteca falsa de 5.000 músicas (HOME temporário, `library.json` de 2,1 MB, script de medição fora do repositório; mediana de 5 a 10 repetições):
+
+  | | antes, 20 arquivos na pasta | depois, 20 arquivos | antes, 1.000 arquivos na pasta | depois, 1.000 arquivos |
+  |---|---|---|---|---|
+  | 1 resultado de download (tudo o que roda na thread da janela) | 874 ms | 2 ms | 12.732 ms | 2 ms |
+  | Gravar o `library.json` (agora só a cada 3 s ou no fim) | junto acima | 50 ms | junto acima | 50 ms |
+  | Redesenhar a lista (`_show_tracks`, agora só ao trocar de playlist, buscar e no fim do lote) | 712 ms | 324 ms | 12.544 ms | 318 ms |
+  | Atualizar as playlists (`_refresh`) | 1.905 ms | 757 ms | 37.079 ms | 752 ms |
+  | Abrir a janela | 2.027 ms | 887 ms | 36.683 ms | 915 ms |
+
+  Com 1.000 arquivos já baixados e 4.000 faltando, a versão antiga levava ~12 s por música: cada música faltando listava a pasta inteira. Continua lento abrir e redesenhar tudo (~0,3 a 0,9 s): os cartões são widgets; isso é o G.4/7.4.
+
 - [ ] G.1 **Leitura aos poucos:** o leitor do Spotify entrega as faixas em lotes durante a leitura, e a biblioteca grava cada lote (junção segura, item 1.21). Se a leitura parar, o que já veio fica salvo e a próxima continua de onde parou. Junto com a fase 2.
 - [ ] G.2 **Baixar enquanto lê:** o download pode começar com as faixas que já chegaram, sem esperar a leitura acabar. Junto com 4.3.
 - [ ] G.3 **Gravação por música, não do arquivo inteiro:** estado em SQLite (fase 3.1), uma linha por música e atualização de uma linha por resultado. Feito isso, fica fora da thread da tela.
