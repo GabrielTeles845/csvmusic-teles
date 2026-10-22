@@ -2329,8 +2329,18 @@ class LibraryModeDialog(QDialog):
 		if playlist:
 			self._begin_scan([playlist])
 
+	def _scan_running(self) -> bool:
+		return bool((self.scraper is not None and self.scraper.running) or self.direct_worker is not None)
+
 	def _begin_scan(self, playlists: list[dict]) -> None:
-		if (self.scraper is not None and self.scraper.running) or self.direct_worker is not None:
+		if self._downloads_running():
+			# A scan reorders the songs; the running download would then write results into the wrong rows.
+			QMessageBox.information(
+				self, "Download in Progress",
+				"Wait for the current download to finish, or stop it, before scanning playlists.",
+			)
+			return
+		if self._scan_running():
 			QMessageBox.information(self, "Scan Running", "A playlist scan is already running.")
 			return
 		if not playlists:
@@ -3466,7 +3476,10 @@ class LibraryModeDialog(QDialog):
 			self.status.setText(f"Exported enabled tracks to {path}")
 
 	def _start_download(self, *, missing_only: bool = False) -> None:
-		if (self.download_worker and self.download_worker.isRunning()) or (self.single_download_worker and self.single_download_worker.isRunning()):
+		if self._downloads_running():
+			return
+		if self._scan_running():
+			QMessageBox.information(self, "Scan Running", "Wait for the playlist scan to finish before downloading.")
 			return
 		if not self._selected_ids():
 			QMessageBox.information(self, "Select Playlist", "Select the playlist you want to download first.")

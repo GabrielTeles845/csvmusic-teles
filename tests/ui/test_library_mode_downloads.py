@@ -136,6 +136,31 @@ def test_m3u_is_written_during_the_batch_not_only_at_the_end(library_dialog):
 	assert len(entries) == library_mode.M3U_WRITE_EVERY_TRACKS
 
 
+def test_scan_cannot_start_while_a_download_runs(library_dialog, monkeypatch):
+	dialog, path, output = library_dialog
+	messages: list[str] = []
+	monkeypatch.setattr(library_mode.QMessageBox, "information", lambda _parent, title, _text: messages.append(title))
+	monkeypatch.setattr(dialog, "_downloads_running", lambda: True)
+	monkeypatch.setattr(dialog, "_scan_next", lambda: messages.append("scan started"))
+
+	dialog._begin_scan(list(dialog.library["playlists"]))
+
+	assert messages == ["Download in Progress"]
+	assert dialog.scan_dialog is None
+
+
+def test_download_cannot_start_while_a_scan_runs(library_dialog, monkeypatch):
+	dialog, path, output = library_dialog
+	messages: list[str] = []
+	monkeypatch.setattr(library_mode.QMessageBox, "information", lambda _parent, title, _text: messages.append(title))
+	monkeypatch.setattr(dialog, "_scan_running", lambda: True)
+	monkeypatch.setattr(dialog, "_open_settings", lambda **_kwargs: messages.append("settings opened") or False)
+
+	dialog._start_download()
+
+	assert messages == ["Scan Running"]
+
+
 def test_library_selector_offers_opus_and_counts_use_library_format(library_dialog):
 	dialog, path, output = library_dialog
 	options = [dialog.format_combo.itemText(index) for index in range(dialog.format_combo.count())]
