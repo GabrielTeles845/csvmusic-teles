@@ -525,8 +525,14 @@ def track_status_counts(
 	fmt: str,
 	listing_cache: dict | None = None,
 ) -> dict[str, int]:
-	"""Count one stored track the way library_status does (enabled/downloaded/missing/redownload)."""
+	"""Count one stored track the way library_status does (enabled/downloaded/missing/redownload).
+
+	A disabled song only counts as "disabled": it is never downloaded, so it is not "missing".
+	"""
 	status = {"enabled": 0, "downloaded": 0, "missing": 0, "disabled": 0, "redownload": 0}
+	if not track.get("enabled", True):
+		status["disabled"] += 1
+		return status
 	status["enabled"] += 1
 	probe = dict(track)
 	probe["playlist"] = playlist_name
