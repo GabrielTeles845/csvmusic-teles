@@ -35,6 +35,9 @@ TOKEN_HEADER = "X-CSVMusic-Token"
 TOKEN_PLACEHOLDER = "{{CSVMUSIC_TOKEN}}"
 MAX_BODY_BYTES = 60 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# Cache de capas em disco: acima disso, as capas usadas há mais tempo saem (é cache; voltam se pedidas).
+IMAGE_CACHE_MAX_BYTES = 300 * 1024 * 1024
+IMAGE_CACHE_LOCKS = 64
 SSE_KEEPALIVE_S = 15.0
 DIALOG_TIMEOUT_S = 15 * 60.0
 DEFAULT_TIMEOUT_S = 30.0
@@ -105,24 +108,74 @@ def fetch_image(url: str) -> bytes:
 
 
 class ImageCache:
-	def __init__(self, folder: pathlib.Path, fetcher: Callable[[str], bytes] = fetch_image):
+	"""Capas em disco, no máximo `max_bytes`; as usadas há mais tempo (mtime) saem primeiro."""
+
+	def __init__(self, folder: pathlib.Path, fetcher: Callable[[str], bytes] = fetch_image, *, max_bytes: int = IMAGE_CACHE_MAX_BYTES):
 		self.folder = folder
 		self.fetcher = fetcher
-		self._locks: dict[str, threading.Lock] = {}
-		self._guard = threading.Lock()
+		self.max_bytes = int(max_bytes)
+		# Travas fixas por fatia do nome (não uma por endereço, que cresceria sem limite).
+		self._locks = [threading.Lock() for _ in range(IMAGE_CACHE_LOCKS)]
+		self._size_lock = threading.Lock()
+		self._size: int | None = None
 
 	def _path(self, url: str) -> pathlib.Path:
 		return self.folder / (hashlib.sha256(url.encode("utf-8")).hexdigest() + ".img")
 
+	def _lock_for(self, path: pathlib.Path) -> threading.Lock:
+		return self._locks[int(path.name[:8], 16) % len(self._locks)]
+
+	def _files(self) -> list[tuple[int, int, pathlib.Path]]:
+		found = []
+		try:
+			for path in self.folder.glob("*.img"):
+				try:
+					info = path.stat()
+				except OSError:
+					continue
+				found.append((info.st_mtime_ns, info.st_size, path))
+		except OSError:
+			pass
+		return found
+
+	def _added(self, size: int) -> None:
+		with self._size_lock:
+			if self._size is None:
+				self._size = sum(item[1] for item in self._files())
+			else:
+				self._size += size
+			if self._size <= self.max_bytes:
+				return
+			files = sorted(self._files())
+			total = sum(item[1] for item in files)
+			target = int(self.max_bytes * 0.8)
+			removed = 0
+			for _mtime, file_size, path in files:
+				if total <= target:
+					break
+				try:
+					path.unlink()
+				except OSError:
+					continue
+				total -= file_size
+				removed += 1
+			self._size = total
+		log(f"image cache trimmed removed={removed} bytes={total} limit={self.max_bytes}")
+
 	def get(self, url: str) -> tuple[bytes, str]:
 		path = self._path(url)
-		with self._guard:
-			lock = self._locks.setdefault(path.name, threading.Lock())
-		with lock:
+		with self._lock_for(path):
 			if path.is_file():
-				data = path.read_bytes()
+				try:
+					data = path.read_bytes()
+				except OSError:
+					data = b""
 				kind = sniff_image_type(data)
 				if kind:
+					try:
+						path.touch()  # usada agora: fica por último na fila de saída
+					except OSError:
+						pass
 					return data, kind
 			data = self.fetcher(url)
 			kind = sniff_image_type(data)
@@ -132,7 +185,8 @@ class ImageCache:
 			temporary = path.with_suffix(".tmp")
 			temporary.write_bytes(data)
 			temporary.replace(path)
-			return data, kind
+		self._added(len(data))
+		return data, kind
 
 
 class Route:
@@ -264,6 +318,15 @@ class WebServer:
 			raise HttpError(400, f"Parâmetro inválido: {name}") from exc
 
 	@staticmethod
+	def _is_index(value: Any) -> bool:
+		return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+	@staticmethod
+	def _key(value: Any) -> str | None:
+		"""Track.key mandado pela tela (opcional): o motor recusa com 409 se a música mudou de lugar."""
+		return str(value) if value not in (None, "") else None
+
+	@staticmethod
 	def _q(query: dict, name: str, default: str = "") -> str:
 		return str(query.get(name, [default])[0] or default)
 
@@ -301,7 +364,7 @@ class WebServer:
 		targets = body.get("targets")
 		if targets is not None:
 			try:
-				targets = [(str(item[0]), int(item[1])) for item in targets]
+				targets = [(str(item[0]), int(item[1]), str(item[2] or "") if len(item) > 2 else "") for item in targets]
 			except (TypeError, ValueError, IndexError) as exc:
 				raise HttpError(400, "Lista de músicas inválida.") from exc
 		return self.call(
@@ -317,25 +380,31 @@ class WebServer:
 
 	def api_set_enabled(self, match, query, body):
 		indices = body.get("indices")
-		if indices is not None and not isinstance(indices, list):
-			raise HttpError(400, "\"indices\" precisa ser uma lista.")
-		return self.call(self.engine.set_tracks_enabled, match["pid"], bool(body.get("enabled")), indices=indices, all_tracks=bool(body.get("all")))
+		if indices is not None and (not isinstance(indices, list) or not all(self._is_index(index) for index in indices)):
+			raise HttpError(400, "\"indices\" precisa ser uma lista de números.")
+		keys = body.get("keys")
+		if keys is not None and not isinstance(keys, list):
+			raise HttpError(400, "\"keys\" precisa ser uma lista.")
+		return self.call(
+			self.engine.set_tracks_enabled, match["pid"], bool(body.get("enabled")), indices=indices, all_tracks=bool(body.get("all")),
+			keys=[str(key) for key in keys] if keys is not None else None,
+		)
 
 	def api_accept(self, match, query, body):
-		return self.call(self.engine.accept_review, match["pid"], int(match["index"]))
+		return self.call(self.engine.accept_review, match["pid"], int(match["index"]), self._key(body.get("key")))
 
 	def api_alternatives(self, match, query, body):
-		track = self.call(self.engine.track_snapshot, match["pid"], int(match["index"]))
+		track = self.call(self.engine.track_snapshot, match["pid"], int(match["index"]), self._key(self._q(query, "key")))
 		return self.engine.fetch_alternatives(track)
 
 	def api_video_info(self, match, query, body):
 		track = None
 		if query.get("playlist_id") and query.get("index"):
-			track = self.call(self.engine.track_snapshot, self._q(query, "playlist_id"), self._int(query, "index", 0))
+			track = self.call(self.engine.track_snapshot, self._q(query, "playlist_id"), self._int(query, "index", 0), self._key(self._q(query, "key")))
 		return self.engine.fetch_video_info(self._q(query, "url"), track)
 
 	def api_download_now(self, match, query, body):
-		return self.call(self.engine.download_now, match["pid"], int(match["index"]), str(body.get("video_id") or ""))
+		return self.call(self.engine.download_now, match["pid"], int(match["index"]), str(body.get("video_id") or ""), self._key(body.get("key")))
 
 	def api_settings(self, match, query, body):
 		return self.call(self.engine.settings)
@@ -353,11 +422,13 @@ class WebServer:
 		return self.call(self.engine.open_library, str(body.get("path") or ""))
 
 	def api_library_save_as(self, match, query, body):
-		return self.call(self.engine.save_library_as, str(body.get("path") or ""))
+		return self.call(self.engine.save_library_as, str(body.get("path") or ""), overwrite=bool(body.get("overwrite")))
 
 	def api_open(self, match, query, body):
 		index = body.get("index")
-		return self.call(self.engine.open_location, str(body.get("what") or ""), body.get("playlist_id"), int(index) if index is not None else None)
+		if index is not None and not self._is_index(index):
+			raise HttpError(400, "Parâmetro inválido: index")
+		return self.call(self.engine.open_location, str(body.get("what") or ""), body.get("playlist_id"), int(index) if index is not None else None, self._key(body.get("key")))
 
 	def api_export_csv(self, match, query, body):
 		data, filename = self.call(self.engine.export_csv_bytes, self._q(query, "playlist_id") or None)
@@ -575,8 +646,15 @@ class WebServer:
 					return
 				body: dict = {}
 				if method in ("POST", "PATCH", "DELETE"):
-					length = int(self.headers.get("Content-Length") or 0)
+					raw_length = str(self.headers.get("Content-Length") or "0").strip()
+					if not raw_length.isdigit():
+						# Negativo prenderia a thread em rfile.read(-1); texto daria 500. O corpo não foi lido: fecha.
+						self.close_connection = True
+						self._error(400, "Tamanho do pedido inválido.")
+						return
+					length = int(raw_length)
 					if length > MAX_BODY_BYTES:
+						self.close_connection = True
 						self._error(413, "Arquivo grande demais.")
 						return
 					raw = self.rfile.read(length) if length else b""

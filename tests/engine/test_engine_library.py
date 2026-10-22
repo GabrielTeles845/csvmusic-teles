@@ -116,6 +116,21 @@ def test_import_csv_content(make_engine):
 	assert error.value.status == 400
 
 
+def test_two_spreadsheets_with_the_same_file_name_stay_apart(make_engine):
+	import base64
+	engine = make_engine(1)
+	first = "title,artist,album\nMusica A,Artista A,Album A\nMusica B,Artista B,Album B\n".encode("utf-8")
+	second = "title,artist,album\nOutra C,Artista C,Album C\n".encode("utf-8")
+	one = engine.import_csv_content("playlist.csv", base64.b64encode(first).decode("ascii"), "Minha festa")["added"][0]
+	two = engine.import_csv_content("playlist.csv", base64.b64encode(second).decode("ascii"), "Treino")["added"][0]
+	assert one != two
+	csvs = {playlist["name"]: [track["title"] for track in playlist["tracks"]] for playlist in engine.library["playlists"] if playlist["platform"] == "csv"}
+	assert csvs == {"Minha festa": ["Musica A", "Musica B"], "Treino": ["Outra C"]}
+	again = engine.import_csv_content("playlist.csv", base64.b64encode(first).decode("ascii"))["added"][0]
+	assert again == one
+	assert len([playlist for playlist in engine.library["playlists"] if playlist["platform"] == "csv"]) == 2
+
+
 def test_settings_round_trip_and_validation(make_engine):
 	engine = make_engine(2)
 	updated = engine.update_settings({"format": "mp3", "eq_bass_gain": 4, "theme": "dark", "write_m3u8": False})
@@ -202,3 +217,28 @@ def test_first_run_flag(make_engine):
 	assert engine.state()["first_run"] is True
 	engine.accept_first_run()
 	assert engine.state()["first_run"] is False
+
+
+def test_save_a_copy_keeps_writing_to_the_original(make_engine, tmp_path):
+	engine = make_engine(3)
+	original = engine.library_path
+	copy = tmp_path / "copia" / "biblioteca-csvmusic.json"
+	copy.parent.mkdir()
+	assert engine.save_library_as(str(copy)) == {"path": str(copy)}
+	assert engine.library_path == original
+	assert engine.events_of("library") == []
+	engine.update_track("spotify:big", 0, {"enabled": False})
+	assert load_library(original)["playlists"][0]["tracks"][0]["enabled"] is False
+	assert load_library(copy)["playlists"][0]["tracks"][0].get("enabled", True) is True
+
+
+def test_save_a_copy_asks_before_replacing_a_file(make_engine, tmp_path):
+	engine = make_engine(2)
+	existing = tmp_path / "outra.json"
+	existing.write_text("{\"meu\": \"arquivo\"}", encoding="utf-8")
+	with pytest.raises(EngineError) as error:
+		engine.save_library_as(str(existing))
+	assert error.value.status == 409 and error.value.extra["needs_confirmation"] == "overwrite"
+	assert existing.read_text(encoding="utf-8") == "{\"meu\": \"arquivo\"}"
+	engine.save_library_as(str(existing), overwrite=True)
+	assert len(load_library(existing)["playlists"]) == 1

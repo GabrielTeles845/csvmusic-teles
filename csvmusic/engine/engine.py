@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QCoreApplication, QObject, QTimer
 
 from csvmusic.core.downloader import sanitize_name, tag_file, write_m3u, youtube_batch_mitigation, youtube_risk_acknowledgement
 from csvmusic.core.library import (
@@ -30,7 +30,7 @@ from csvmusic.core.library import (
 	backup_library_file, clear_playlist_access_error, describe_skip, edit_library_track, enabled_tracks,
 	export_csv, find_library_track, import_csv_playlist, library_track_path, load_library, m3u_ready_tracks, playlist_probes,
 	mark_playlist_access_error, merge_playlist_scan, new_library, playlist_by_id, rename_library_playlist,
-	save_library, write_library_m3us,
+	save_library, track_key, write_library_m3us,
 )
 from csvmusic.core.log import log
 from csvmusic.core.settings import flush_settings, load_settings, save_settings, settings_path
@@ -55,6 +55,8 @@ DEFAULT_WEB_PORT = 8765
 EQ_BANDS = ("volume", "bass", "treble")
 LEGACY_MP3_MODES = ("vbr", "cbr_192", "cbr_256", "cbr_320")
 THEMES = ("system", "light", "dark")
+# A ordem das músicas mudou (nova análise) desde que a tela leu a lista: o índice aponta para outra música.
+TRACK_MOVED_MESSAGE = "A playlist mudou; abra a música de novo."
 
 _BOOL_SETTINGS = {
 	"legacy_ipod_mode": False, "embed_art": True, "force_download_mode": False, "prefix_track_numbers": False,
@@ -103,6 +105,15 @@ class NullHost:
 
 	def reveal_path(self, path: str) -> bool:
 		return False
+
+
+# Workers que não pararam ao fechar o app. Ficam aqui (sem pai) até o processo acabar: um QThread
+# apagado com a thread rodando derruba o app ("QThread: Destroyed while thread is still running").
+_LINGERING_WORKERS: list = []
+
+
+def lingering_workers() -> list:
+	return _LINGERING_WORKERS
 
 
 def _now_local() -> datetime.datetime:
@@ -170,6 +181,9 @@ class Engine(QObject):
 		# Aparelhos.
 		self._devices: dict[str, Any] = {}
 		self._device_lock = threading.Lock()
+		# Uma tarefa por vez no aparelho (sincronizar, remover playlist, ejetar): duas mexendo no
+		# iTunesDB ao mesmo tempo estragam o banco. Remover e ejetar rodam na thread do servidor.
+		self._device_task_lock = threading.Lock()
 		self.device_worker = None
 		self.device_busy = False
 		# Registro da sessão.
@@ -324,11 +338,18 @@ class Engine(QObject):
 			raise EngineError(404, "Esta playlist não está na biblioteca.")
 		return playlist
 
-	def _track(self, playlist: dict, index: int) -> dict:
+	def _track(self, playlist: dict, index: int, key: str | None = None) -> dict:
+		"""A música no índice. Com `key` (Track.key que a tela recebeu), recusa se ali agora está outra música."""
 		tracks = playlist.get("tracks", [])
 		if not (0 <= index < len(tracks)):
+			if key:
+				raise EngineError(409, TRACK_MOVED_MESSAGE, code="track_moved")
 			raise EngineError(404, "Esta música não está mais na playlist.")
-		return tracks[index]
+		track = tracks[index]
+		if key and track_key(track) != str(key):
+			log(f"engine stale track index refused playlist={_key_of(playlist)} index={index}")
+			raise EngineError(409, TRACK_MOVED_MESSAGE, code="track_moved")
+		return track
 
 	def _track_view(self, playlist: dict, index: int) -> dict:
 		paths = self._paths(playlist)
@@ -380,15 +401,15 @@ class Engine(QObject):
 			"items": [self._track_view(playlist, index) for index in selected[offset:offset + limit]],
 		}
 
-	def track(self, playlist_id: str, index: int) -> dict:
+	def track(self, playlist_id: str, index: int, key: str | None = None) -> dict:
 		playlist = self._playlist(playlist_id)
-		self._track(playlist, index)
+		self._track(playlist, index, key)
 		return self._track_view(playlist, index)
 
-	def track_snapshot(self, playlist_id: str, index: int) -> dict:
+	def track_snapshot(self, playlist_id: str, index: int, key: str | None = None) -> dict:
 		"""Cópia da música para buscas fora da thread do Qt."""
 		playlist = self._playlist(playlist_id)
-		track = dict(self._track(playlist, index))
+		track = dict(self._track(playlist, index, key))
 		track["playlist"] = playlist.get("name") or "Playlist"
 		return track
 
@@ -410,15 +431,32 @@ class Engine(QObject):
 		self.emit("library", {"path": str(target)})
 		return self.state()
 
-	def save_library_as(self, path: str) -> dict:
-		target = pathlib.Path(str(path or "")).expanduser()
+	def save_library_as(self, path: str, *, overwrite: bool = False) -> dict:
+		"""Grava uma cópia da biblioteca em `path`. O app continua gravando no arquivo de sempre.
+
+		Arquivo que já existe só é substituído com `overwrite=True` (a tela pergunta antes; o seletor
+		nativo do Mac já pergunta sozinho).
+		"""
 		if not str(path or "").strip():
 			raise EngineError(400, "Escolha onde salvar a biblioteca.")
-		self.library_path = target.with_suffix(".json")
-		self.library_load_error = None
-		self.save()
-		self.emit("library", {"path": str(self.library_path)})
-		return {"path": str(self.library_path)}
+		target = pathlib.Path(str(path)).expanduser().with_suffix(".json")
+		if self.library_load_error:
+			raise EngineError(409, "A biblioteca não pôde ser lida; não há o que copiar. Abra outra biblioteca antes.")
+		if target.resolve() == self.library_path.resolve():
+			self.save()
+			return {"path": str(target)}
+		if target.exists() and not overwrite:
+			raise EngineError(
+				409, f"Já existe um arquivo chamado {target.name} nesta pasta. Quer substituir?",
+				needs_confirmation="overwrite", path=str(target),
+			)
+		try:
+			save_library(target, self.library)
+		except OSError as exc:
+			log(f"library copy failed path={target} error={exc}")
+			raise EngineError(500, "Não deu para salvar a cópia nesta pasta.") from exc
+		log(f"library copy saved path={target} playlists={len(self.library.get('playlists', []))} current={self.library_path}")
+		return {"path": str(target)}
 
 	# --- playlists -------------------------------------------------------------------
 
@@ -476,10 +514,16 @@ class Engine(QObject):
 		if not content:
 			raise EngineError(400, "A planilha está vazia.")
 		stem = sanitize_name(pathlib.Path(str(filename or "planilha.csv")).stem) or "planilha"
-		folder = settings_path().parent / "planilhas"
+		# A playlist da planilha é identificada pelo caminho do arquivo guardado. Uma pasta por conteúdo
+		# (hash curto) separa duas planilhas diferentes com o mesmo nome; a mesma planilha de novo cai
+		# no mesmo arquivo e atualiza a mesma playlist. O nome do arquivo continua o original (vira o
+		# nome da playlist quando a planilha não traz um).
+		digest = hashlib.sha256(content).hexdigest()[:10]
+		folder = settings_path().parent / "planilhas" / digest
 		folder.mkdir(parents=True, exist_ok=True)
 		target = folder / f"{stem}.csv"
-		target.write_bytes(content)
+		if not target.is_file() or target.read_bytes() != content:
+			target.write_bytes(content)
 		return self.import_csv_path(str(target), name=name)
 
 	def import_csv_path(self, path: str, *, name: str | None = None) -> dict:
@@ -500,6 +544,8 @@ class Engine(QObject):
 		self.save()
 		log(f"library CSV imported path={path} created={created} tracks={len(playlist.get('tracks', []))}")
 		self.emit("playlists", {"ids": [key]})
+		if not created:
+			self.emit("tracks_changed", {"playlist_id": key})
 		return {"added": [key], "warnings": []}
 
 	def rename_playlist(self, playlist_id: str, new_name: str) -> dict:
@@ -581,8 +627,10 @@ class Engine(QObject):
 	# --- músicas ---------------------------------------------------------------------
 
 	def update_track(self, playlist_id: str, index: int, changes: dict) -> dict:
+		changes = dict(changes or {})
+		expected_key = changes.pop("key", None)
 		playlist = self._playlist(playlist_id)
-		track = self._track(playlist, index)
+		track = self._track(playlist, index, expected_key)
 		key = _key_of(playlist)
 		allowed = {"enabled", "title", "artists", "album", "volume_gain", "preferred_video_url", "preferred_video_label", "force_redownload"}
 		unknown = set(changes) - allowed
@@ -688,9 +736,18 @@ class Engine(QObject):
 			raise EngineError(500, "Não deu para atualizar o arquivo da música.") from exc
 		self._refresh_track_path(playlist, index)
 
-	def set_tracks_enabled(self, playlist_id: str, enabled: bool, *, indices: list[int] | None = None, all_tracks: bool = False) -> dict:
+	def set_tracks_enabled(
+		self, playlist_id: str, enabled: bool, *, indices: list[int] | None = None, all_tracks: bool = False,
+		keys: list[str] | None = None,
+	) -> dict:
+		"""`keys` (opcional, na mesma ordem de `indices`): recusa tudo com 409 se alguma música mudou de lugar."""
 		playlist = self._playlist(playlist_id)
 		tracks = playlist.get("tracks", [])
+		if keys is not None and not all_tracks:
+			if len(keys) != len(indices or []):
+				raise EngineError(400, "Mande uma chave para cada música.")
+			for index, expected in zip(indices or [], keys):
+				self._track(playlist, int(index), str(expected or "") or None)
 		targets = range(len(tracks)) if all_tracks else [int(index) for index in (indices or []) if 0 <= int(index) < len(tracks)]
 		changed = 0
 		for index in targets:
@@ -702,9 +759,9 @@ class Engine(QObject):
 			self.emit_playlist(_key_of(playlist))
 		return {"changed": changed}
 
-	def accept_review(self, playlist_id: str, index: int) -> dict:
+	def accept_review(self, playlist_id: str, index: int, key: str | None = None) -> dict:
 		playlist = self._playlist(playlist_id)
-		track = self._track(playlist, index)
+		track = self._track(playlist, index, key)
 		track["low_confidence_review"] = False
 		track["review_reason"] = None
 		self.save()
@@ -895,6 +952,8 @@ class Engine(QObject):
 			)
 			self.invalidate_paths(_key_of(merged))
 			self.save()
+			# A ordem pode ter mudado: a tela relê a lista e larga o painel aberto (os índices antigos não valem mais).
+			self.emit("tracks_changed", {"playlist_id": _key_of(merged)})
 			diff = dict(merged.get("last_diff") or {})
 			captured = len(merged.get("tracks") or []) - int(diff.get("kept_from_incomplete_scan", 0) or 0)
 			entry = {
@@ -962,8 +1021,9 @@ class Engine(QObject):
 
 	def start_download(
 		self, playlist_ids: list[str] | None = None, *, missing_only: bool = True,
-		targets: list[tuple[str, int]] | None = None, confirm_risk: bool = False,
+		targets: list[tuple] | None = None, confirm_risk: bool = False,
 	) -> dict:
+		"""`targets`: (playlist_id, índice) ou (playlist_id, índice, Track.key); com a chave, 409 se a música mudou de lugar."""
 		if self.downloads_running():
 			raise EngineError(409, "Já tem um download em andamento.")
 		if self.scan_running():
@@ -974,6 +1034,9 @@ class Engine(QObject):
 			for target in targets:
 				playlist = playlist_by_id(self.library, str(target[0]))
 				if playlist is not None:
+					expected = str(target[2] or "") if len(target) > 2 else ""
+					if expected:
+						self._track(playlist, int(target[1]), expected)
 					only_targets.add((_key_of(playlist), int(target[1])))
 			selected_keys = {key for key, _index in only_targets}
 			missing_only = False
@@ -1251,14 +1314,14 @@ class Engine(QObject):
 		self.emit_job(force=True)
 		return self.job()
 
-	def download_now(self, playlist_id: str, index: int, video_id: str) -> dict:
+	def download_now(self, playlist_id: str, index: int, video_id: str, key: str | None = None) -> dict:
 		"""Baixa só esta música com o vídeo escolhido (e guarda a escolha)."""
 		if self.downloads_running():
 			raise EngineError(409, "Espere o download atual terminar.")
 		if self.scan_running():
 			raise EngineError(409, "Espere a análise terminar antes de baixar.")
 		playlist = self._playlist(playlist_id)
-		stored = self._track(playlist, index)
+		stored = self._track(playlist, index, key)
 		video_id = str(video_id or "").strip()
 		if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id):
 			raise EngineError(400, "Vídeo do YouTube inválido.")
@@ -1578,7 +1641,7 @@ class Engine(QObject):
 			raise EngineError(400, "Arquivo para quê?")
 		return {"path": self.host.choose_file(purpose)}
 
-	def open_location(self, what: str, playlist_id: str | None = None, index: int | None = None) -> dict:
+	def open_location(self, what: str, playlist_id: str | None = None, index: int | None = None, key: str | None = None) -> dict:
 		from csvmusic.core.log import log_path
 		if what == "log":
 			ok = self.host.reveal_path(str(log_path()))
@@ -1605,7 +1668,7 @@ class Engine(QObject):
 			ok = self.host.open_path(str(folder))
 		elif what == "file":
 			playlist = self._playlist(str(playlist_id or ""))
-			self._track(playlist, int(index or 0))
+			self._track(playlist, int(index or 0), key)
 			path = self._paths(playlist)[int(index or 0)]
 			if path is None:
 				raise EngineError(404, "Esta música ainda não tem arquivo.")
@@ -1701,15 +1764,28 @@ class Engine(QObject):
 			result.append({"playlist_id": _key_of(playlist), "name": views.playlist_name(playlist), "state": state.lower(), "ready": ready})
 		return result
 
+	def _claim_device(self) -> None:
+		with self._device_task_lock:
+			if self.device_busy:
+				raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
+			self.device_busy = True
+
+	def _release_device(self) -> None:
+		with self._device_task_lock:
+			self.device_busy = False
+
 	def start_device_sync(self, device_id: str, playlist_ids: list[str]) -> dict:
 		device = self._device(device_id)
-		if self.device_busy:
-			raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
 		keys = {_key_of(playlist) for playlist in (playlist_by_id(self.library, key) for key in playlist_ids or []) if playlist}
 		if not keys:
 			raise EngineError(400, "Escolha pelo menos uma playlist para levar ao aparelho.")
-		self.device_busy = True
-		worker = self.device_sync_worker_factory(device, self.library, keys, self)
+		self._claim_device()
+		try:
+			# O worker copia (fundo) as playlists escolhidas: a thread dele não lê dicionários que a thread do Qt muda.
+			worker = self.device_sync_worker_factory(device, self.library, keys, self)
+		except Exception:
+			self._release_device()
+			raise
 		self.device_worker = worker
 		worker.progress.connect(lambda done, total, message: self.emit("device", {"phase": "sync", "done": int(done), "total": int(total), "message": str(message)}))
 		worker.completed.connect(lambda result, chosen=device: self._device_sync_completed(chosen, result))
@@ -1740,56 +1816,73 @@ class Engine(QObject):
 	def _device_worker_finished(self) -> None:
 		worker = self.device_worker
 		self.device_worker = None
-		self.device_busy = False
+		self._release_device()
 		if worker is not None:
 			worker.deleteLater()
 
 	def delete_device_playlist(self, device_id: str, name: str) -> dict:
 		from csvmusic.core.device_sync import delete_device_playlist
 		device = self._device(device_id)
-		if self.device_busy:
-			raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
+		self._claim_device()
 		try:
 			delete_device_playlist(device, name)
 		except Exception as exc:
 			log(f"device playlist delete failed device={device.root} name={name!r} error={exc}")
 			raise EngineError(500, "Não deu para remover a playlist do aparelho.") from exc
+		finally:
+			self._release_device()
 		return {"removed": True}
 
 	def eject_device(self, device_id: str, *, _from_worker: bool = False) -> dict:
 		from csvmusic.core.device_sync import eject_device
 		device = self._device(device_id)
-		if self.device_busy and not _from_worker:
-			raise EngineError(409, "O aparelho está ocupado com outra tarefa.")
+		# Vindo do fim da sincronização, o aparelho ainda está ocupado por ela (e só ela mexe nele).
+		if not _from_worker:
+			self._claim_device()
 		try:
 			eject_device(device)
 		except Exception as exc:
 			log(f"device eject failed device={device.root} error={exc}")
 			raise EngineError(500, "Não deu para ejetar o aparelho.") from exc
+		finally:
+			if not _from_worker:
+				self._release_device()
 		self.emit("device", {"phase": "ejected", "done": 0, "total": 0, "message": f"{device.name} pode ser desconectado."})
 		return {"ok": True}
 
 	# --- fechar ------------------------------------------------------------------------
 
-	def shutdown(self, wait_ms: int = 10000) -> None:
+	def _wait_worker(self, worker, name: str, wait_ms: int, extra_wait_ms: int) -> None:
+		if worker is None or not worker.isRunning():
+			return
+		if worker.wait(wait_ms):
+			return
+		log(f"engine shutdown: {name} worker still running after {wait_ms} ms; waiting {extra_wait_ms} ms more")
+		if worker.wait(extra_wait_ms):
+			return
+		log(f"engine shutdown: {name} worker did not stop; keeping it alive until the process exits")
+		worker.setParent(None)
+		_LINGERING_WORKERS.append(worker)
+
+	def shutdown(self, wait_ms: int = 10000, extra_wait_ms: int = 20000) -> None:
 		"""Fechar o app: para o download, cancela a análise, grava a biblioteca e as configurações."""
 		if self.download_worker is not None and self.download_worker.isRunning():
 			self.download_stopping = True
 			self.download_worker.stop()
-			self.download_worker.wait(wait_ms)
-		if self.single_worker is not None and self.single_worker.isRunning():
-			self.single_worker.wait(wait_ms)
+		self._wait_worker(self.download_worker, "download", wait_ms, extra_wait_ms)
+		self._wait_worker(self.single_worker, "single download", wait_ms, extra_wait_ms)
 		if self.scan_running():
 			# Marca cancelado antes: o leitor entrega o resultado parcial na hora, e ele não pode ser gravado.
 			self.scan_cancelled = True
 			self.scan_queue.clear()
 			if self.scraper is not None and getattr(self.scraper, "running", False):
 				self.scraper._finish("Library scan cancelled because CSVMusic was closed.")
-		if self.direct_worker is not None and self.direct_worker.isRunning():
-			self.direct_worker.wait(wait_ms)
-		for worker in (self.session_worker, self.device_worker):
-			if worker is not None and worker.isRunning():
-				worker.wait(wait_ms)
+		self._wait_worker(self.direct_worker, "scan", wait_ms, extra_wait_ms)
+		self._wait_worker(self.session_worker, "session", wait_ms, extra_wait_ms)
+		self._wait_worker(self.device_worker, "device", wait_ms, extra_wait_ms)
+		# O que os workers emitiram antes de parar (o resultado da última música, o fim do lote) ainda
+		# está na fila do Qt: aplica na biblioteca antes de gravar.
+		QCoreApplication.sendPostedEvents()
 		self._job_timer.stop()
 		self.save()
 		flush_settings()

@@ -1,5 +1,6 @@
 // Componentes comuns: diálogo, menu "…", avisos, interruptor, escolha segmentada, brilho.
 import { esc, icon, el } from "./util.js";
+import { emit } from "./store.js";
 
 // ---------- Pilha do Esc ----------
 // Quem abre algo por cima (menu, diálogo, painel) empilha quem fecha. Esc fecha o de cima.
@@ -162,7 +163,11 @@ export function aviso({ tom = "info", titulo, texto = "", lista = null, acoes = 
 	while (pilhaAvisos.children.length > 4) pilhaAvisos.firstElementChild.remove();
 	return fechar;
 }
-export const erro = (e, titulo = "Não deu certo") => aviso({ tom: "err", titulo, texto: e?.message || String(e) });
+export const erro = (e, titulo = "Não deu certo") => {
+	// 409 "track_moved": a playlist mudou desde que a tela leu a lista; relê a lista e larga o painel.
+	if (e?.dados?.code === "track_moved") emit("musica-mudou");
+	return aviso({ tom: "err", titulo, texto: e?.message || String(e) });
+};
 
 // ---------- Controles ----------
 export const chave = (id, ligado, rotulo, desligado = false) =>

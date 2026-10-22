@@ -15,13 +15,15 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 
+from csvmusic.core.log import log
+
 
 class BridgeTimeout(TimeoutError):
 	"""O motor não respondeu a tempo."""
 
 
 class _Task:
-	__slots__ = ("fn", "args", "kwargs", "done", "result", "error")
+	__slots__ = ("fn", "args", "kwargs", "done", "result", "error", "lock", "started", "cancelled")
 
 	def __init__(self, fn: Callable, args: tuple, kwargs: dict):
 		self.fn = fn
@@ -30,6 +32,10 @@ class _Task:
 		self.done = threading.Event()
 		self.result: Any = None
 		self.error: BaseException | None = None
+		# Quem chega primeiro decide: a thread do Qt começando (started) ou o tempo acabando (cancelled).
+		self.lock = threading.Lock()
+		self.started = False
+		self.cancelled = False
 
 
 class EngineBridge(QObject):
@@ -48,13 +54,26 @@ class EngineBridge(QObject):
 		task = _Task(fn, args, kwargs)
 		self._invoke.emit(task)
 		if not task.done.wait(timeout):
-			raise BridgeTimeout(f"engine call timed out: {getattr(fn, '__name__', fn)}")
+			with task.lock:
+				# Ainda na fila: não roda mais (a página já recebeu 504 e pode repetir o pedido).
+				# Se já começou, termina; só a resposta se perde.
+				task.cancelled = not task.started
+			if task.cancelled:
+				log(f"engine call cancelled after timeout: {getattr(fn, '__name__', fn)}")
+				raise BridgeTimeout(f"engine call timed out: {getattr(fn, '__name__', fn)}")
+			if not task.done.wait(0):
+				log(f"engine call timed out while running: {getattr(fn, '__name__', fn)}")
+				raise BridgeTimeout(f"engine call timed out: {getattr(fn, '__name__', fn)}")
 		if task.error is not None:
 			raise task.error
 		return task.result
 
 	@Slot(object)
 	def _run(self, task: _Task) -> None:
+		with task.lock:
+			if task.cancelled:
+				return
+			task.started = True
 		try:
 			task.result = task.fn(*task.args, **task.kwargs)
 		except BaseException as exc:

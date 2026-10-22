@@ -185,9 +185,9 @@ function ligar(caixa) {
 			case "aceitar": aceitar(); break;
 			case "ir-versao": irPara("versao"); break;
 			case "entrar": acoes.entrarNoYoutube(); break;
-			case "baixar": acoes.baixarMusicas([[pid, t.index]]); break;
+			case "baixar": acoes.baixarMusicas([[pid, t.index, t.key]]); break;
 			case "rebaixar": mudar({ force_redownload: true }, "Vai baixar de novo no próximo download"); break;
-			case "finder": acoes.abrirNoFinder("file", { playlist_id: pid, index: t.index }); break;
+			case "finder": acoes.abrirNoFinder("file", { playlist_id: pid, index: t.index, key: t.key }); break;
 			case "ligar": mudar({ enabled: b.getAttribute("aria-checked") !== "true" }); break;
 			case "auto": mudar({ preferred_video_url: "" }, "Voltou à versão automática"); break;
 			case "alternativas": carregarAlternativas(); break;
@@ -222,7 +222,7 @@ function dadosMudaram() {
 async function mudar(corpo, ok) {
 	const { playlistId, index } = aberto;
 	try {
-		const novo = await patch(`/playlists/${enc(playlistId)}/tracks/${index}`, corpo);
+		const novo = await patch(`/playlists/${enc(playlistId)}/tracks/${index}`, { ...corpo, key: aberto.track.key });
 		emit("track", { playlist_id: playlistId, track: novo });
 		if (ok) aviso({ tom: "ok", titulo: ok });
 	} catch (e) {
@@ -234,7 +234,7 @@ async function mudar(corpo, ok) {
 async function aceitar() {
 	const { playlistId, index } = aberto;
 	try {
-		const novo = await post(`/playlists/${enc(playlistId)}/tracks/${index}/accept`);
+		const novo = await post(`/playlists/${enc(playlistId)}/tracks/${index}/accept`, { key: aberto.track.key });
 		emit("track", { playlist_id: playlistId, track: novo });
 	} catch (e) { erro(e, "Não deu para aceitar"); }
 }
@@ -260,7 +260,7 @@ async function carregarAlternativas() {
 	lista.innerHTML = [68, 54, 76, 60].map((w) => `<div class="alt sh-alt" aria-hidden="true"><b>${sh(w + "%")}</b><span class="dur">${sh("2.4em")}</span><small>${sh(w / 2 + "%")}</small></div>`).join("");
 	const { playlistId, index } = aberto;
 	try {
-		const r = await get(`/playlists/${enc(playlistId)}/tracks/${index}/alternatives`);
+		const r = await get(`/playlists/${enc(playlistId)}/tracks/${index}/alternatives` + qs({ key: aberto.track.key }));
 		if (!aberto || aberto.index !== index) return;
 		lista.dataset.estado = "pronto";
 		const ops = r.options || [];
@@ -281,6 +281,7 @@ async function carregarAlternativas() {
 			<button class="btn pri" data-a="baixar-escolhido">${icon("download")}Baixar agora</button></div>`;
 		lista._ops = ops;
 	} catch (e) {
+		if (e.dados?.code === "track_moved") { erro(e, "Não deu para buscar outras versões"); return; }
 		lista.dataset.estado = "";
 		lista.innerHTML = `<p class="erro-campo">${esc(e.message)}</p>`;
 		botao.hidden = false;
@@ -307,7 +308,7 @@ async function baixarEscolhido() {
 	if (!aberto?.escolhido) return;
 	const { playlistId, index } = aberto;
 	try {
-		const job = await post(`/playlists/${enc(playlistId)}/tracks/${index}/download-now`, { video_id: aberto.escolhido.id });
+		const job = await post(`/playlists/${enc(playlistId)}/tracks/${index}/download-now`, { video_id: aberto.escolhido.id, key: aberto.track.key });
 		if (job && "kind" in job) { store.job = job; emit("job"); }
 		aviso({ tom: "ok", titulo: "Baixando esta versão", texto: "Ela também fica guardada como a escolha desta música." });
 	} catch (e) { erro(e, "Não deu para baixar"); }
@@ -323,7 +324,7 @@ async function conferirLink(url) {
 		<ul class="alertas"><li>${sh("16px", "sh-blk")}<span>${sh("85%")}</span></li></ul></div>`;
 	const { playlistId, index } = aberto;
 	try {
-		const r = await get("/video-info" + qs({ url, playlist_id: playlistId, index }));
+		const r = await get("/video-info" + qs({ url, playlist_id: playlistId, index, key: aberto.track.key }));
 		if (meu !== pedidoLink || !aberto) return;
 		const i = r.info || {};
 		const tipos = { song: "Música do YouTube Music", video: "Vídeo do YouTube", podcast: "Episódio de podcast" };
@@ -341,6 +342,7 @@ async function conferirLink(url) {
 			</div></div>`;
 	} catch (e) {
 		if (meu !== pedidoLink) return;
+		if (e.dados?.code === "track_moved") { erro(e, "Não deu para conferir o link"); return; }
 		box.innerHTML = `<p class="erro-campo" style="margin-top:8px">${esc(e.message)}</p>`;
 	}
 }
@@ -376,3 +378,10 @@ on("job", () => {
 	}
 });
 on("removida", (id) => { if (aberto?.playlistId === id) fecharPainel(false); });
+// Nova análise mudou a lista desta playlist: o índice do painel pode ser de outra música agora.
+on("tracks_changed", ({ playlist_id }) => {
+	if (aberto?.playlistId !== playlist_id) return;
+	fecharPainel(false);
+	aviso({ tom: "info", titulo: "A playlist mudou", texto: "A análise trouxe a lista nova. Abra a música de novo." });
+});
+on("musica-mudou", () => fecharPainel(false));

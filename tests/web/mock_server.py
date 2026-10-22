@@ -9,7 +9,8 @@ inventados aqui mesmo (nomes, capas, números). Nada aqui é dado real. Só bibl
 
 Opções: --porta N (0 = livre), --atraso MS (espera em toda chamada JSON, para ver o brilho),
 --job download|scan|nenhum (o que já está rodando ao abrir), --vazio (biblioteca sem playlist),
---primeira-vez (mostra o aviso inicial), --token T (padrão "mock-token").
+--primeira-vez (mostra o aviso inicial), --token T (padrão "mock-token"), --log-durante-carga (linha do
+registro chega por evento enquanto GET /api/log responde).
 """
 from __future__ import annotations
 
@@ -96,7 +97,7 @@ def nova_musica(rng: random.Random, index: int, estado: str, pasta: str) -> dict
 	album_n = rng.randrange(len(ALBUNS))
 	album = ALBUNS[album_n]
 	t = {
-		"index": index, "position": index + 1, "title": titulo, "artists": artistas, "album": album,
+		"index": index, "key": f"mock:{rng.randrange(10 ** 12)}|occurrence:1", "position": index + 1, "title": titulo, "artists": artistas, "album": album,
 		"duration_ms": rng.randrange(140, 330) * 1000 + rng.randrange(0, 999),
 		"cover_url": capa((zlib.crc32(artistas.encode()) + album_n) % 97), "enabled": estado != "disabled",
 		"state": estado, "detail": None, "downloaded_video": None, "preferred_video": None,
@@ -356,6 +357,11 @@ def rodar_analise(ids: list) -> None:
 				if pl["scan_state"] == "never" or not pl["tracks"]:
 					pl["tracks"] = gerar_lista(b.rng, alvo, {"missing": 40, "review": 3, "not_found": 1}, pl["folder"])
 					pl["reported_total"] = alvo
+				else:
+					# Como no motor: a análise trouxe uma música nova no topo e todas as outras mudaram de índice.
+					pl["tracks"].insert(0, nova_musica(b.rng, 0, "missing", pl["folder"]))
+					for novo_indice, musica in enumerate(pl["tracks"]):
+						musica["index"], musica["position"] = novo_indice, novo_indice + 1
 				pl["scan_state"] = "ok"
 				pl["last_scanned_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 				status = "incomplete" if pl["reported_total"] and len(pl["tracks"]) < pl["reported_total"] else "ok"
@@ -363,6 +369,7 @@ def rodar_analise(ids: list) -> None:
 				resultados.append({"playlist_id": pid, "name": pl["name"], "captured": len(pl["tracks"]),
 					"reported_total": pl["reported_total"], "status": status, "message": None,
 					"diff": {"added": 2, "removed": 1, "unchanged": max(0, len(pl["tracks"]) - 2), "kept": 0}})
+				emitir("tracks_changed", {"playlist_id": pid})
 			emitir("playlist", b.resumo(pid))
 	with LOCK:
 		cancelada = b.parar
@@ -453,13 +460,18 @@ class Handler(BaseHTTPRequestHandler):
 
 	# ------------ entrada
 	def corpo(self) -> dict:
+		# Lido uma vez por pedido (a conexão é reaproveitada: rotear() limpa a cópia).
+		if self._corpo is not None:
+			return self._corpo
 		n = int(self.headers.get("Content-Length") or 0)
 		if not n:
-			return {}
+			self._corpo = {}
+			return self._corpo
 		try:
-			return json.loads(self.rfile.read(n) or b"{}")
+			self._corpo = json.loads(self.rfile.read(n) or b"{}")
 		except json.JSONDecodeError:
 			raise Erro(400, "Pedido mal formado.")
+		return self._corpo
 
 	def do_GET(self):
 		self.rotear("GET")
@@ -474,10 +486,14 @@ class Handler(BaseHTTPRequestHandler):
 		self.rotear("DELETE")
 
 	def rotear(self, metodo):
+		self._corpo = None
 		url = urllib.parse.urlsplit(self.path)
 		caminho = urllib.parse.unquote(url.path)
 		q = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query, keep_blank_values=True).items()}
 		try:
+			if metodo != "GET":
+				# Lê o corpo sempre: rota que não usa o corpo deixaria os bytes na conexão reaproveitada.
+				self.corpo()
 			if metodo == "GET" and caminho in ("/", "/index.html"):
 				html = (STATIC / "index.html").read_text(encoding="utf-8").replace("{{CSVMUSIC_TOKEN}}", ARGS.token)
 				self.bytes_(html.encode(), "text/html; charset=utf-8", {"Cache-Control": "no-store",
@@ -556,6 +572,11 @@ class Handler(BaseHTTPRequestHandler):
 		b = BIB
 		with LOCK:
 			r = self.api_dentro(metodo, caminho, q, b)
+			if caminho == "/log" and ARGS.log_durante_carga:
+				# Uma linha nova sai pelo evento depois da foto do registro e antes da resposta chegar.
+				b.registrar(f"Linha que chegou durante a carga do registro ({b.seq + 1}).")
+		if caminho == "/log" and ARGS.log_durante_carga:
+			time.sleep(.8)
 		if isinstance(r, tuple):
 			self.bytes_(*r)
 		else:
@@ -612,7 +633,13 @@ class Handler(BaseHTTPRequestHandler):
 				raise Erro(409, "Já há uma tarefa rodando. Espere ela terminar ou pare.")
 			c = self.corpo()
 			if "targets" in c:
-				alvos = [(p, int(i)) for p, i in c["targets"] if p in b.playlists]
+				alvos = []
+				for p, i, *k in c["targets"]:
+					if p not in b.playlists:
+						continue
+					if k and k[0] and b.playlists[p]["tracks"][int(i)]["key"] != k[0]:
+						raise Erro(409, "A playlist mudou; abra a música de novo.", {"code": "track_moved"})
+					alvos.append((p, int(i)))
 			else:
 				alvos = [(p, t["index"]) for p in c.get("playlist_ids", []) if p in b.playlists
 					for t in b.playlists[p]["tracks"] if t["enabled"] and (not t["file_path"] or t["state"] == "redownload")]
@@ -658,7 +685,14 @@ class Handler(BaseHTTPRequestHandler):
 			emitir("library", {"path": self.corpo().get("path")})
 			return b.estado()
 		if caminho == "/library/save-as":
-			return {"path": self.corpo().get("path")}
+			# Como no motor: é só uma cópia; arquivo que já existe só com overwrite (a tela pergunta).
+			c = self.corpo()
+			salvas = b.__dict__.setdefault("copias", set())
+			if c.get("path") in salvas and not c.get("overwrite"):
+				raise Erro(409, f"Já existe um arquivo chamado {c['path'].rsplit('/', 1)[-1]} nesta pasta. Quer substituir?",
+					{"needs_confirmation": "overwrite", "path": c.get("path")})
+			salvas.add(c.get("path"))
+			return {"path": c.get("path")}
 		if caminho == "/open":
 			return {"ok": True}
 		if caminho == "/export-csv":
@@ -782,6 +816,9 @@ class Handler(BaseHTTPRequestHandler):
 			emitir("playlist", b.resumo(pid))
 			return {"changed": mudou}
 		pl, t = self.musica(pid, partes[3])
+		chave = q.get("key") if metodo == "GET" else self.corpo().get("key")
+		if chave and chave != t["key"]:
+			raise Erro(409, "A playlist mudou; abra a música de novo.", {"code": "track_moved"})
 		if len(partes) == 4 and metodo == "PATCH":
 			c = self.corpo()
 			if "enabled" in c:
@@ -918,8 +955,10 @@ class Handler(BaseHTTPRequestHandler):
 			iniciar(copiar)
 			return {"started": True}
 		if len(partes) == 4 and metodo == "DELETE":
+			time.sleep(1.2)  # o aparelho de verdade demora; a tela tem de desligar os botões enquanto isso
 			return {"removed": True}
 		if len(partes) == 3 and partes[2] == "eject":
+			time.sleep(1.2)
 			depois(.5, lambda: emitir("device", {"phase": "ejected", "done": 0, "total": 0, "message": "Pode desconectar o aparelho."}))
 			return {"ok": True}
 		raise Erro(404, "Rota não encontrada.")
@@ -935,6 +974,7 @@ def main() -> None:
 	p.add_argument("--primeira-vez", action="store_true")
 	p.add_argument("--token", default="mock-token")
 	p.add_argument("--erro-biblioteca", action="store_true", help="state.library.load_error preenchido")
+	p.add_argument("--log-durante-carga", action="store_true", help="GET /api/log demora e uma linha nova chega pelo evento no meio")
 	ARGS = p.parse_args()
 	BIB = Biblioteca(ARGS.vazio, ARGS.primeira_vez)
 	for k in range(30):

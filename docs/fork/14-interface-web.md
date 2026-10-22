@@ -15,7 +15,7 @@ python -m csvmusic.app
        │    └─ /api/events      → Server-Sent Events (seção 5)
        └─ Janela principal: QMainWindow + QWebEngineView apontando para o servidor
             menu nativo do Mac (CSVMusic › Sobre, Ajustes ⌘, , Sair ⌘Q; Arquivo › Adicionar playlist ⌘N,
-            Importar planilha…, Abrir biblioteca…, Salvar biblioteca como…, Abrir no navegador)
+            Importar planilha…, Abrir biblioteca…, Salvar uma cópia da biblioteca…, Abrir no navegador)
 ```
 
 - O mesmo endereço abre no navegador do Mac (menu "Abrir no navegador"). Só `127.0.0.1`.
@@ -41,7 +41,9 @@ python -m csvmusic.app
 
 ## 4. API (JSON, prefixo `/api`)
 
-Erros: status 4xx/5xx com `{"error": "mensagem em português"}` (alguns trazem campos a mais, como `needs_confirmation`). 403 sem token ou com Host/Origin de fora; 404 playlist ou música que não existe; 409 tarefa em andamento ou ação que não cabe agora; 504 o motor demorou a responder.
+Erros: status 4xx/5xx com `{"error": "mensagem em português"}` (alguns trazem campos a mais, como `needs_confirmation` ou `code`). 400 pedido malformado (inclusive `Content-Length` negativo ou que não é número, e índice que não é número); 403 sem token ou com Host/Origin de fora; 404 playlist ou música que não existe; 409 tarefa em andamento ou ação que não cabe agora; 504 o motor demorou a responder (o pedido que ainda não tinha começado é descartado, não roda depois).
+
+**Chave da música (22/10/2026).** Uma nova análise pode mudar a ordem das músicas, e o `index` que a tela guardou passa a apontar para outra. Toda rota que muda ou lê uma música específica aceita a `key` que veio no `Track` (no corpo ou em `?key=`, conforme a rota). Se no índice agora está outra música, o motor recusa sem mexer em nada: 409 `{"error": "A playlist mudou; abra a música de novo.", "code": "track_moved"}`. Sem `key`, vale só o índice (como antes). A tela manda sempre a chave; ao receber `track_moved`, relê a lista e fecha o painel.
 
 ### Objetos
 
@@ -65,7 +67,7 @@ Erros: status 4xx/5xx com `{"error": "mensagem em português"}` (alguns trazem c
 **Track**
 ```json
 {
-  "index": 0, "position": 1, "title": "Country House - 2012 Remaster", "artists": "Blur", "album": "The Great Escape",
+  "index": 0, "key": "spotify:2fXK…|occurrence:1", "position": 1, "title": "Country House - 2012 Remaster", "artists": "Blur", "album": "The Great Escape",
   "duration_ms": 237500, "cover_url": "https://…", "enabled": true,
   "state": "downloaded|missing|review|error|age_limit|not_found|redownload|queued|matching|downloading|tagging|disabled",
   "detail": "Arquivo 7 s mais longo que a música",
@@ -75,7 +77,7 @@ Erros: status 4xx/5xx com `{"error": "mensagem em português"}` (alguns trazem c
   "error": null
 }
 ```
-`detail` é a frase curta da situação (motivo do pulo, da revisão, do erro), sempre em português. `quality` só quando o arquivo existe. `error`, quando há erro salvo: `{"summary": "frase curta", "advice": "o que fazer", "technical": "texto original do yt-dlp", "at": "…", "kind": "age_restricted"|"youtube_blocked"|null}` (`youtube_blocked`: o YouTube pediu para confirmar que não é robô; a tela oferece "Entrar no YouTube"). As músicas vêm na ordem da playlist (os filtros separam o que precisa de atenção).
+`key`: chave estável da música dentro da playlist (id da fonte, ou artista e título quando não há id, mais a ocorrência; a mesma de `_track_key` em `core/library.py`). Não muda quando a ordem muda; muda se o usuário edita o título de uma música sem id. `detail` é a frase curta da situação (motivo do pulo, da revisão, do erro), sempre em português. `quality` só quando o arquivo existe. `error`, quando há erro salvo: `{"summary": "frase curta", "advice": "o que fazer", "technical": "texto original do yt-dlp", "at": "…", "kind": "age_restricted"|"youtube_blocked"|null}` (`youtube_blocked`: o YouTube pediu para confirmar que não é robô; a tela oferece "Entrar no YouTube"). As músicas vêm na ordem da playlist (os filtros separam o que precisa de atenção).
 
 **Job** (só um por vez)
 ```json
@@ -94,26 +96,26 @@ Erros: status 4xx/5xx com `{"error": "mensagem em português"}` (alguns trazem c
 | `GET /api/state` | — | `{version, library: {path, output_dir, format, load_error}, playlists: [PlaylistSummary], job: Job, account: {connected, use_cookies, checked_at}, first_run: bool}` (`load_error`: frase em português quando o `library.json` não pôde ser lido; o app abre vazio e não grava) |
 | `GET /api/playlists/{id}/tracks` | `filter=all\|missing\|review\|error\|downloaded\|disabled\|not_found`, `q=`, `offset=0`, `limit=100` | `{total, counts, items: [Track]}` (`total` já filtrado; `counts` da playlist inteira) |
 | `POST /api/playlists` | `{"urls": ["…"]}` | `{added: [id], errors: [{url, error}], warnings: ["…"]}` (análise começa sozinha para as novas; com análise em andamento, entram na fila; com download em andamento, ficam para depois). `warnings` avisa playlist comum do YouTube |
-| `POST /api/playlists/import-csv` | `{"filename": "…", "content_base64": "…", "name": "opcional"}` | `{added: [id], warnings: []}` (o arquivo fica guardado em `<pasta de dados>/planilhas/`, para analisar de novo depois) |
+| `POST /api/playlists/import-csv` | `{"filename": "…", "content_base64": "…", "name": "opcional"}` | `{added: [id], warnings: []}` (o arquivo fica guardado em `<pasta de dados>/planilhas/<hash do conteúdo>/<nome>.csv`, para analisar de novo depois: duas planilhas diferentes com o mesmo nome viram duas playlists; a mesma planilha de novo atualiza a mesma e manda `tracks_changed`) |
 | `PATCH /api/playlists/{id}` | `{"name": "…"}` | `PlaylistSummary` |
 | `DELETE /api/playlists/{id}` | `?files=keep\|trash` | `{removed: true, trashed_folder: "…"\|null}` (recusa com 409 se a pasta é compartilhada com outra playlist) |
 | `POST /api/scan` | `{"playlist_ids": [...]}` ou `{"scope": "all"\|"unscanned"}` | `Job` |
 | `POST /api/scan/cancel` | — | `Job` |
-| `POST /api/download` | `{"playlist_ids": [...], "missing_only": true, "confirm_risk": false}` ou `{"targets": [[playlist_id, index], ...]}` | `Job` (409 se já há tarefa). Lote grande (250+): 409 com `{"error": "aviso em português", "needs_confirmation": "youtube_risk", "tracks": n}`; a tela mostra o aviso e repete com `confirm_risk: true` |
+| `POST /api/download` | `{"playlist_ids": [...], "missing_only": true, "confirm_risk": false}` ou `{"targets": [[playlist_id, index, key], ...]}` (`key` opcional; 409 `track_moved` se não bate) | `Job` (409 se já há tarefa). Lote grande (250+): 409 com `{"error": "aviso em português", "needs_confirmation": "youtube_risk", "tracks": n}`; a tela mostra o aviso e repete com `confirm_risk: true` |
 | `POST /api/download/stop` | — | `Job` |
-| `PATCH /api/playlists/{id}/tracks/{index}` | qualquer de `enabled`, `title`, `artists`, `album`, `volume_gain`, `preferred_video_url` (`""` volta ao automático), `preferred_video_label` (opcional; sem ele, usa o título visto no último `/api/video-info`), `force_redownload` | `Track` (título/artista/álbum: 409 durante download; renomeia o arquivo e regrava as tags). Mudar volume ou vídeo marca para baixar de novo |
-| `POST /api/playlists/{id}/tracks/set-enabled` | `{"enabled": bool, "indices": [..]}` ou `{"enabled": bool, "all": true}` | `{changed: n}` |
-| `POST /api/playlists/{id}/tracks/{index}/accept` | — | `Track` (aceita a revisão) |
-| `GET /api/playlists/{id}/tracks/{index}/alternatives` | — | `{options: [{videoId, title, author, source: "music"\|"videos", duration_seconds, album, duration_mismatch, version_markers, score}]}` |
-| `GET /api/video-info` | `url=`, `playlist_id=`, `index=` | `{video_id, info: {title, author, duration_seconds, kind, playable, age_restricted}, description, warnings: ["…"]}` (avisos de `core/manual_match.py`, em português) |
-| `POST /api/playlists/{id}/tracks/{index}/download-now` | `{"video_id": "…"}` | `Job` (baixa só essa música com esse vídeo e guarda o vídeo como escolha da música) |
+| `PATCH /api/playlists/{id}/tracks/{index}` | `key` (recomendado) e qualquer de `enabled`, `title`, `artists`, `album`, `volume_gain`, `preferred_video_url` (`""` volta ao automático), `preferred_video_label` (opcional; sem ele, usa o título visto no último `/api/video-info`), `force_redownload` | `Track` (título/artista/álbum: 409 durante download; renomeia o arquivo e regrava as tags). Mudar volume ou vídeo marca para baixar de novo |
+| `POST /api/playlists/{id}/tracks/set-enabled` | `{"enabled": bool, "indices": [..], "keys": [..]}` (`keys` opcional, na ordem de `indices`; uma que não bate recusa tudo com 409) ou `{"enabled": bool, "all": true}` | `{changed: n}` |
+| `POST /api/playlists/{id}/tracks/{index}/accept` | `{"key": "…"}` | `Track` (aceita a revisão) |
+| `GET /api/playlists/{id}/tracks/{index}/alternatives` | `key=` | `{options: [{videoId, title, author, source: "music"\|"videos", duration_seconds, album, duration_mismatch, version_markers, score}]}` |
+| `GET /api/video-info` | `url=`, `playlist_id=`, `index=`, `key=` | `{video_id, info: {title, author, duration_seconds, kind, playable, age_restricted}, description, warnings: ["…"]}` (avisos de `core/manual_match.py`, em português) |
+| `POST /api/playlists/{id}/tracks/{index}/download-now` | `{"video_id": "…", "key": "…"}` | `Job` (baixa só essa música com esse vídeo e guarda o vídeo como escolha da música) |
 | `GET /api/settings` | — | objeto da seção 4.1 |
 | `PATCH /api/settings` | chaves da seção 4.1 | objeto completo |
 | `POST /api/dialogs/choose-folder` | `{"purpose": "output"\|"m3u"\|"tool", "start": "…"}` | `{path: "…"\|null}` (seletor nativo) |
 | `POST /api/dialogs/choose-file` | `{"purpose": "cookies"\|"ytdlp"\|"ffmpeg"\|"library"\|"csv"}` | `{path: "…"\|null}` |
 | `POST /api/library/open` | `{"path": "…"}` | `state` |
-| `POST /api/library/save-as` | `{"path": "…"}` | `{path}` |
-| `POST /api/open` | `{"what": "output"\|"playlist"\|"file"\|"log", "playlist_id": "…", "index": 0}` | `{ok: true}` (abre no Finder) |
+| `POST /api/library/save-as` | `{"path": "…", "overwrite": false}` | `{path}`. Grava uma **cópia**: o app continua gravando no arquivo de sempre (não muda `library.path`, não manda o evento `library`). Arquivo que já existe: 409 `{needs_confirmation: "overwrite", path}`; a tela pergunta e repete com `overwrite: true` |
+| `POST /api/open` | `{"what": "output"\|"playlist"\|"file"\|"log", "playlist_id": "…", "index": 0, "key": "…"}` | `{ok: true}` (abre no Finder) |
 | `GET /api/export-csv` | `playlist_id=` (sem ele, a biblioteca toda) | arquivo `.csv` |
 | `POST /api/account/youtube/sign-in` | `{"method": "popup"\|"firefox"}` | `{started: true}`; resultado chega no evento `account` |
 | `POST /api/account/youtube/test` | — | `{started: true}`; resultado no evento `account` |
@@ -124,8 +126,8 @@ Erros: status 4xx/5xx com `{"error": "mensagem em português"}` (alguns trazem c
 | `GET /api/devices` | — | `{devices: [{id, name, kind, description}], busy}` |
 | `GET /api/devices/{id}/playlists` | — | `{playlists: [{name, track_count}], library: [{playlist_id, name, state: "new"\|"changed"\|"current", ready}]}` (`ready`: todas as ativas baixadas e nenhuma marcada para baixar de novo; só as prontas vão para o aparelho) |
 | `POST /api/devices/{id}/sync` | `{"playlist_ids": [...]}` | `{started: true}`; progresso no evento `device` |
-| `DELETE /api/devices/{id}/playlists/{name}` | — | `{removed: true}` |
-| `POST /api/devices/{id}/eject` | — | `{ok: true}` |
+| `DELETE /api/devices/{id}/playlists/{name}` | — | `{removed: true}` (409 se o aparelho está ocupado) |
+| `POST /api/devices/{id}/eject` | — | `{ok: true}` (409 se o aparelho está ocupado) |
 | `GET /api/trash` | — | `{files: n, bytes: n}` (lixeira interna de todas as playlists) |
 | `POST /api/trash/empty` | — | `{moved: n}` (vai para a Lixeira do macOS) |
 | `GET /api/image` | `url=` | bytes da imagem (cache) |
@@ -144,6 +146,7 @@ Cada mensagem: `event: <tipo>` e `data: <json>`.
 | `playlist` | `PlaylistSummary` | contagem, nome, capa ou marca de uma playlist mudou |
 | `playlists` | `{ids: [...]}` | playlist entrou ou saiu (a tela pede `/api/state`) |
 | `track` | `{playlist_id, track: Track}` | uma música mudou (resultado, estado em andamento) |
+| `tracks_changed` | `{playlist_id}` | a lista de músicas da playlist mudou (nova análise, planilha importada de novo): a ordem e os índices podem ser outros. A tela relê a lista mantendo a rolagem e fecha o painel daquela playlist |
 | `job` | `Job` | progresso; no máximo 4 por segundo |
 | `scan_done` | `{results: [{playlist_id, name, captured, reported_total, status: "ok"\|"incomplete"\|"private"\|"error", message, diff?: {added, removed, unchanged, kept}}]}` | fim de uma rodada de análise (não vem se a rodada foi cancelada) |
 | `download_done` | `{done, skipped, failed, age_restricted: n, age_action: "enable_session"\|"sign_in"\|null, stopped: bool, message}` | fim do download. `age_restricted` conta as músicas que só baixam com a conta do YouTube (restrição de idade ou pedido de verificação de robô); `age_action`: o botão diz "Usar minha sessão do YouTube" ou "Entrar no YouTube". Depois de 2 músicas seguidas recusadas por verificação de robô, o lote para sozinho |
@@ -152,7 +155,7 @@ Cada mensagem: `event: <tipo>` e `data: <json>`.
 | `account` | `{connected, use_cookies, ok, message}` | login/teste do YouTube terminou |
 | `age_retry_ready` | `{targets: n}` | sessão confirmada; a tela oferece "Baixar de novo" |
 | `device` | `{phase: "start"\|"sync"\|"done"\|"error"\|"ejected", done, total, message}` | sincronização com aparelho |
-| `library` | `{path}` | outra biblioteca foi aberta (ou salva com outro nome); a tela pede `/api/state` |
+| `library` | `{path}` | outra biblioteca foi aberta; a tela pede `/api/state` (salvar uma cópia não manda este evento) |
 | `menu` | `{action: "about"\|"settings"\|"add_playlist"}` | o usuário escolheu no menu do Mac algo que a página mostra |
 
 A cada conexão, o servidor manda primeiro `job` com o estado atual.
@@ -162,7 +165,7 @@ A cada conexão, o servidor manda primeiro `job` com o estado atual.
 - Sem etapa de build: HTML, CSS e módulos JS do navegador. Nada carregado da internet (fonte Figtree e ícones Lucide ficam dentro do repositório, com as licenças em `licenses/`).
 - O servidor serve `/` com `static/index.html` e `/static/<caminho>` com o resto da pasta. Põe o token no lugar de `{{CSVMUSIC_TOKEN}}` (`<meta name="csvmusic-token" content="{{CSVMUSIC_TOKEN}}">`); sem o marcador, insere a meta logo depois de `<head>`.
 - A página vai com `Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'`: **nada de `<script>` inline** (só arquivos em `/static/`); capa externa só por `/api/image?url=`.
-- Lista virtual: só as linhas visíveis existem no DOM; páginas de 100 músicas pedidas conforme rola. Atualização de uma música troca só aquela linha.
+- Lista virtual: só as linhas visíveis existem no DOM; páginas de 100 músicas pedidas conforme rola. Atualização de uma música troca só aquela linha. Se uma página chega com `total` diferente das outras (com filtro, músicas entram e saem durante um download), as outras páginas são descartadas e pedidas de novo, sem mexer na rolagem.
 - Carregando: shimmer no formato final (skill `carregamento-fiel`). Primeiro acesso e estado vazio: demonstração animada de colar o link e analisar (skill `demo-animada`).
 - Temas claro e escuro, seguindo o sistema, com escolha nos ajustes.
 - Larguras conferidas: 390 (celular) e 1440 (computador), claro e escuro.
@@ -215,4 +218,8 @@ Depois que a tela nova cobre tudo: `ui/main_window.py`, `ui/library_mode.py`, `u
 
 - O leitor do Spotify roda numa janela sem moldura, sem foco e fora da tela (`-20000, -20000`). Para ver o que ele lê: `CSVMUSIC_SHOW_SPOTIFY_READER=1`.
 - Pedidos lentos que não mexem na biblioteca (buscar alternativas, conferir link, ler o aparelho, baixar capa) rodam na thread do servidor; o resto passa pela ponte.
+- Aparelhos: sincronizar, remover playlist e ejetar são uma tarefa por vez (`_device_task_lock` + `device_busy`; ocupado = 409). O `DeviceSyncWorker` trabalha numa cópia profunda das playlists escolhidas. Na tela, os botões do aparelho ficam desligados enquanto um pedido roda.
+- Fechar: `shutdown` espera os workers, processa a fila do Qt (o resultado da última música e o fim do lote chegam por sinal) e só então grava. Worker que não para no tempo: espera mais, vai para o log e fica vivo sem pai até o processo sair (`lingering_workers()`; o `app.py` sai com `os._exit` nesse caso, para o Python não apagar um QThread rodando).
+- Cache de capas: no máximo 300 MB em `image-cache/`; acima disso, as capas usadas há mais tempo saem até 80%. Travas fixas (64), não uma por endereço.
+- Conferir na tela os consertos de 22/10 que só existem no JS: `tests/web/verificar_revisao.mjs` com o servidor falso (cenários `chave`, `lista`, `aparelhos`, `copia`; `registro` precisa de `--log-durante-carga`).
 - Ainda falta: andamento em % do arquivo (o worker não informa), a verificação de atualização (desligada no fork) e o "fechar só esconde" (fase 8).

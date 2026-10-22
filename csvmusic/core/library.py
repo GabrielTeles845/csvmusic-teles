@@ -995,6 +995,11 @@ def _track_key(track: dict) -> str:
 	return f"{base}|occurrence:{occurrence}"
 
 
+def track_key(track: dict) -> str:
+	"""Chave estável de uma música dentro da playlist (id da fonte + ocorrência); não muda quando a ordem muda."""
+	return _track_key(track)
+
+
 def _now() -> str:
 	return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 

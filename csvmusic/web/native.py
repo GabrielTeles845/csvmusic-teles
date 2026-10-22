@@ -47,7 +47,7 @@ class NativeHost:
 		return path or None
 
 	def save_file(self, purpose: str, suggested: str = "") -> str | None:
-		title = "Salvar biblioteca como" if purpose == "library" else "Salvar como"
+		title = "Salvar uma cópia da biblioteca" if purpose == "library" else "Salvar como"
 		filters = "Biblioteca do CSVMusic (*.json)" if purpose == "library" else "Todos os arquivos (*)"
 		path, _ = QFileDialog.getSaveFileName(self.window, title, suggested or str(pathlib.Path.home()), filters)
 		return path or None

@@ -129,7 +129,7 @@ export async function baixarArquivo(path, nomePadrao) {
 	setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
-const TIPOS = ["playlist", "playlists", "track", "job", "scan_done", "download_done", "log", "warning",
+const TIPOS = ["playlist", "playlists", "track", "tracks_changed", "job", "scan_done", "download_done", "log", "warning",
 	"account", "age_retry_ready", "device", "library", "menu"];
 
 // Liga os eventos do servidor. Reconecta sozinho (EventSource) e avisa quando cai.

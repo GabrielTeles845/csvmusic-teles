@@ -328,7 +328,7 @@ function abrirDaLinha(row) {
 
 async function marcar(t, ligado) {
 	try {
-		const novo = await patch(`/playlists/${enc(vista.id)}/tracks/${t.index}`, { enabled: ligado });
+		const novo = await patch(`/playlists/${enc(vista.id)}/tracks/${t.index}`, { enabled: ligado, key: t.key });
 		emit("track", { playlist_id: vista.id, track: novo });
 	} catch (e) {
 		erro(e, "Não deu para mudar a música");
@@ -338,7 +338,7 @@ async function marcar(t, ligado) {
 
 export async function aceitar(t, playlistId = vista.id) {
 	try {
-		const novo = await post(`/playlists/${enc(playlistId)}/tracks/${t.index}/accept`);
+		const novo = await post(`/playlists/${enc(playlistId)}/tracks/${t.index}/accept`, { key: t.key });
 		emit("track", { playlist_id: playlistId, track: novo });
 	} catch (e) { erro(e, "Não deu para aceitar"); }
 }
@@ -434,6 +434,8 @@ on("job", () => {
 	}
 });
 on("recarregar-lista", () => vista.lista?.iniciar());
+on("tracks_changed", ({ playlist_id }) => { if (playlist_id === vista.id) vista.lista?.recarregar(); });
+on("musica-mudou", () => vista.lista?.recarregar());
 on("painel", () => vista.lista?.redesenharVisiveis((t) => true));
 
 export const vistaAtual = () => vista;

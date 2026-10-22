@@ -210,3 +210,75 @@ def test_image_host_list():
 		assert not image_url_allowed(url), url
 	assert sniff_image_type(b"\xff\xd8\xff\xe0") == "image/jpeg"
 	assert sniff_image_type(b"<html>") is None
+
+
+def test_image_cache_stays_under_its_size_limit(tmp_path):
+	import os
+	from csvmusic.web.server import ImageCache
+	cache = ImageCache(tmp_path / "img", lambda url: PNG + url.encode("ascii").ljust(300, b"x"), max_bytes=1000)
+	paths = []
+	for number in range(8):
+		url = f"https://i.scdn.co/image/{number}"
+		cache.get(url)
+		paths.append(cache._path(url))
+		os.utime(paths[-1], (1_000_000 + number, 1_000_000 + number))
+	files = list((tmp_path / "img").glob("*.img"))
+	assert sum(path.stat().st_size for path in files) <= 1000
+	assert paths[-1].exists() and not paths[0].exists()
+	# Uma capa apagada volta a ser baixada quando pedida de novo.
+	data, kind = cache.get("https://i.scdn.co/image/0")
+	assert kind == "image/png" and paths[0].exists()
+
+
+def test_image_cache_locks_do_not_grow_with_every_url(tmp_path):
+	from csvmusic.web.server import ImageCache
+	cache = ImageCache(tmp_path / "img", lambda url: PNG)
+	for number in range(500):
+		cache.get(f"https://i.scdn.co/image/{number}")
+	assert len(cache._locks) <= 64
+
+
+def _raw(server, length: str) -> bytes:
+	with socket.create_connection(("127.0.0.1", server.port), timeout=3) as connection:
+		connection.sendall((
+			f"POST /api/scan/cancel HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\nX-CSVMusic-Token: {server.token}\r\n"
+			f"Content-Length: {length}\r\n\r\n"
+		).encode("ascii"))
+		try:
+			return connection.recv(200)
+		except socket.timeout:
+			return b"<sem resposta>"
+
+
+@pytest.mark.parametrize("length", ["-1", "abc", "1e3"])
+def test_bad_content_length_is_a_400_and_does_not_hang(web, length):
+	_app, server, _engine = web
+	answer = _raw(server, length)
+	assert answer.startswith(b"HTTP/1.1 400"), answer
+
+
+def test_bad_numbers_in_the_body_are_a_400(web):
+	app, server, _engine = web
+	bad_open = _request(app, server, "POST", "/api/open", body={"what": "file", "playlist_id": "spotify:big", "index": "x"})
+	assert bad_open["status"] == 400
+	bad_indices = _request(app, server, "POST", "/api/playlists/spotify:big/tracks/set-enabled", body={"enabled": False, "indices": ["x"]})
+	assert bad_indices["status"] == 400
+
+
+def test_stale_track_key_gets_409_over_http(web):
+	app, server, engine = web
+	first = _json(_request(app, server, "GET", "/api/playlists/spotify:big/tracks"))["items"]
+	wrong = first[0]["key"]
+	stale = _request(app, server, "PATCH", "/api/playlists/spotify:big/tracks/1", body={"enabled": False, "key": wrong})
+	assert stale["status"] == 409
+	assert _json(stale) == {"error": "A playlist mudou; abra a música de novo.", "code": "track_moved"}
+	assert engine.library["playlists"][0]["tracks"][1].get("enabled", True) is True
+	for path, body in (
+		("/api/playlists/spotify:big/tracks/1/accept", {"key": wrong}),
+		("/api/playlists/spotify:big/tracks/set-enabled", {"enabled": False, "indices": [1], "keys": [wrong]}),
+		("/api/download", {"targets": [["spotify:big", 1, wrong]]}),
+		("/api/open", {"what": "file", "playlist_id": "spotify:big", "index": 1, "key": wrong}),
+	):
+		assert _request(app, server, "POST", path, body=body)["status"] == 409, path
+	ok = _request(app, server, "PATCH", "/api/playlists/spotify:big/tracks/1", body={"enabled": False, "key": first[1]["key"]})
+	assert ok["status"] == 200 and _json(ok)["key"] == first[1]["key"]
