@@ -356,26 +356,6 @@ def build_ytdlp_mitigation_args(profile: YouTubeMitigationProfile | None) -> lis
 		args += ["--limit-rate", profile.limit_rate]
 	return args
 
-def _strip_cookie_args(cmd: list[str]) -> list[str]:
-	new: list[str] = []
-	skip_next = False
-	for i, tok in enumerate(cmd):
-		if skip_next:
-			skip_next = False
-			continue
-		if tok == "--cookies":
-			skip_next = True
-			continue
-		if tok.startswith("--cookies="):
-			continue
-		if tok == "--cookies-from-browser":
-			skip_next = True
-			continue
-		if tok.startswith("--cookies-from-browser="):
-			continue
-		new.append(tok)
-	return new
-
 def _should_retry_without_cookies(stderr: str, stdout: str) -> bool:
 	text = f"{stderr or ''}\n{stdout or ''}".lower()
 	if (

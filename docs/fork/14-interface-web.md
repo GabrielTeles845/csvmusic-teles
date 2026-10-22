@@ -195,6 +195,8 @@ A cada conexão, o servidor manda primeiro `job` com o estado atual.
 
 ## 7. O que sai
 
+**Feito em 22/10/2026**, depois de conferir a tela nova com o app real (planilha de 1.124 músicas, um álbum e uma playlist pública do Spotify lidos de verdade). Também saíram o código que só a janela antiga usava (`CookiesCheckWorker`, `MusicURLImportWorker`, `UpdateCheckWorker`, `AlternativesFetchWorker`, `VideoInfoWorker`, `core/url_import.py`, `core/config.py`, `core/models.py`, imagens de splash).
+
 Depois que a tela nova cobre tudo: `ui/main_window.py`, `ui/library_mode.py`, `ui/device_sync.py`, `ui/theme.py`, `ui/spotify_api_test.py`, `library_mode_ui.py`, `spotify_api_test_ui.py`, as fontes Comic Neue/VCR e os testes que só existiam para essas telas. Ficam: `ui/workers.py`, `ui/spotify_public_scrape.py`, `ui/youtube_popup.py`, `ui/youtube_login.py` (janelas nativas necessárias).
 
 ## 8. Onde está no código (motor e servidor, 22/10/2026)

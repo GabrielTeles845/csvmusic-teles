@@ -45,14 +45,6 @@ def resource_base() -> pathlib.Path:
 		return base
 	return pathlib.Path(__file__).resolve().parents[2] / "resources"
 
-def splash_image_path() -> pathlib.Path | None:
-	base = resource_base()
-	for name in ("splash_small.png", "splash.png"):
-		p = base / name
-		if p.exists():
-			return p
-	return None
-
 def app_icon_path() -> pathlib.Path | None:
 	base = resource_base()
 	candidates = [

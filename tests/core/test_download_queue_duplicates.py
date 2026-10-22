@@ -26,7 +26,7 @@ def test_numbered_files_are_not_duplicates(tmp_path: pathlib.Path) -> None:
 
 
 def test_library_download_queue_sends_a_repeated_song_once(tmp_path: pathlib.Path) -> None:
-	from csvmusic.ui.library_mode import _pending_download_tracks
+	from csvmusic.engine.workers import pending_download_tracks as _pending_download_tracks
 
 	first = _song(playlist_occurrence=1)
 	chosen = _song(playlist_occurrence=2, preferred_video_id="hand", preferred_selection_locked=True)

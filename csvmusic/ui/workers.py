@@ -1,72 +1,27 @@
 # tabs only
 from PySide6.QtCore import QObject, Signal, QThread
 import pathlib, traceback, time, random, threading
-import subprocess
-import json
-import sqlite3
 import re, unicodedata
 from typing import Callable, List, Dict
 
 from ytmusicapi import YTMusic
 
 from csvmusic.core.csv_import import load_csv, tracks_from_csv
-from csvmusic.core.url_import import fetch_music_url
 from csvmusic.core.log import log
-from csvmusic.core.ytmusic_match import find_best, more_candidates, skip_log_line, RATE_LIMIT_S, CONFIDENCE_MIN
+from csvmusic.core.ytmusic_match import find_best, skip_log_line, RATE_LIMIT_S, CONFIDENCE_MIN
 from csvmusic.core.downloader import (
 	download_m4a, download_mp3, download_opus, tag_file, yt_thumbnail_bytes, cover_art_url_bytes, write_m3u, sanitize_name,
 	youtube_batch_mitigation, build_ytdlp_mitigation_args, detect_youtube_risk,
 	YOUTUBE_MITIGATION_NONE, YOUTUBE_MITIGATION_AGGRESSIVE, YouTubeMitigationProfile, AgeRestrictedError, YouTubeRiskError,
 	DownloadCancelled, cancellation_scope, check_downloaded_duration,
 )
-from csvmusic.core.paths import ytdlp_path as _resolve_ytdlp, INTERNAL_YTDLP
-from csvmusic.core.subprocess_env import subprocess_kwargs
-from csvmusic.core.update_check import UpdateInfo, fetch_available_update
-from csvmusic.core.track_output import expected_track_path, track_filename_base
+from csvmusic.core.track_output import track_filename_base
 from csvmusic.core.library import m3u_ready_tracks
 
 _FORCE_FALLBACK_MIN_SCORE = 0.45
 # Songs refused in a row for "sign in to confirm you are not a bot" before the batch stops.
 BLOCKED_TRACKS_BEFORE_STOP = 2
 
-
-class UpdateCheckWorker(QThread):
-	sig_done = Signal(object)
-
-	def __init__(self, current_version: str, parent: QObject | None = None):
-		super().__init__(parent)
-		self.current_version = current_version
-
-	def run(self):
-		update: UpdateInfo | None = None
-		try:
-			update = fetch_available_update(self.current_version)
-		except Exception as exc:
-			log(f"update check unavailable: {exc}")
-		self.sig_done.emit(update)
-
-class MusicURLImportWorker(QThread):
-	sig_done = Signal(bool, dict, str)
-
-	def __init__(self, playlist_url: str, parent: QObject | None = None):
-		super().__init__(parent)
-		self.playlist_url = playlist_url
-
-	def run(self):
-		try:
-			playlist = fetch_music_url(self.playlist_url)
-			self.sig_done.emit(True, {
-				"id": playlist.id,
-				"name": playlist.name,
-				"tracks": playlist.tracks,
-				"total_count": playlist.total_count,
-				"source_type": playlist.source_type,
-				"platform": playlist.platform,
-				"warning": playlist.warning,
-			}, "")
-		except Exception as exc:
-			log(f"url import failure: url='{self.playlist_url}' error={exc}")
-			self.sig_done.emit(False, {}, str(exc))
 
 def _legacy_cover_size(legacy_options: Dict | None, *, embed_art: bool) -> int:
 	if not embed_art:
@@ -105,44 +60,6 @@ def _norm_text(text: str) -> str:
 
 def _tokens(text: str) -> set[str]:
 	return {tok for tok in re.findall(r"\w+", _norm_text(text), flags=re.UNICODE) if any(ch.isalnum() for ch in tok)}
-
-def _run_yt_dlp_command(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
-	if cmd and cmd[0] == INTERNAL_YTDLP:
-		stdout_buf: list[str] = []
-		stderr_buf: list[str] = []
-		try:
-			from yt_dlp import main as yt_dlp_main
-		except Exception as exc:
-			return subprocess.CompletedProcess(cmd, 1, "", f"failed to import yt_dlp module: {exc}")
-		import io
-		import contextlib
-		out = io.StringIO()
-		err = io.StringIO()
-		with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-			try:
-				rc = yt_dlp_main(cmd[1:])
-			except SystemExit as exc:
-				code = exc.code
-				if isinstance(code, int):
-					rc = code
-				elif code is None:
-					rc = 0
-				else:
-					rc = 1
-			except Exception as exc:
-				rc = 1
-				err.write(str(exc))
-		return subprocess.CompletedProcess(cmd, rc, out.getvalue(), err.getvalue())
-	return subprocess.run(
-		cmd,
-		stdout=subprocess.PIPE,
-		stderr=subprocess.PIPE,
-		text=True,
-		encoding="utf-8",
-		errors="replace",
-		timeout=timeout,
-		**subprocess_kwargs()
-	)
 
 _MAX_CONFIDENT_BACKUPS = 2
 
@@ -739,41 +656,6 @@ class SingleDownloadWorker(QThread):
 			self.sig_finished.emit(self.row_idx, payload)
 
 
-class AlternativesFetchWorker(QThread):
-	sig_done = Signal(int, list, str)
-
-	def __init__(self, row_idx: int, track: Dict, exclude_ids: set[str] | None = None, parent: QObject | None = None):
-		super().__init__(parent)
-		self.row_idx = row_idx
-		self.track = track
-		self.exclude_ids = set(exclude_ids or set())
-
-	def run(self):
-		try:
-			options = more_candidates(self.track, exclude_ids=self.exclude_ids, source_mode="all")
-			self.sig_done.emit(self.row_idx, options, "")
-		except Exception as exc:
-			log(f"alternatives fetch failure: track='{self.track.get('artists','')} — {self.track.get('title','')}' error={exc}")
-			self.sig_done.emit(self.row_idx, [], str(exc))
-
-
-class VideoInfoWorker(QThread):
-	"""Look up one pasted YouTube link: title, channel, length and kind."""
-	sig_done = Signal(str, dict, str)
-
-	def __init__(self, video_id: str, parent: QObject | None = None):
-		super().__init__(parent)
-		self.video_id = video_id
-
-	def run(self):
-		from csvmusic.core.manual_match import fetch_video_info
-		try:
-			self.sig_done.emit(self.video_id, fetch_video_info(self.video_id), "")
-		except Exception as exc:
-			log(f"video info failure: video_id={self.video_id} error={exc}")
-			self.sig_done.emit(self.video_id, {}, str(exc))
-
-
 class YouTubeSessionTestWorker(QThread):
 	"""Bounded network check; never returns cookie contents or private account data."""
 	sig_done = Signal(bool, str)
@@ -797,105 +679,3 @@ class YouTubeSessionTestWorker(QThread):
 			self.sig_done.emit(False, "CHECK FAILED — Could not verify with YouTube. Check your connection and try again; this does not necessarily mean the cookies are invalid.")
 
 
-class CookiesCheckWorker(QThread):
-	# Emits (ok, message)
-	sig_done = Signal(bool, str)
-
-	def __init__(self, cookies_browser: str | None, cookies_file: str | None, yt_dlp_path: str | None, parent: QObject | None = None):
-		super().__init__(parent)
-		self.cookies_browser = cookies_browser
-		self.cookies_file = cookies_file
-		self.yt_dlp_path = yt_dlp_path
-
-	def run(self):
-		try:
-			if self.cookies_file:
-				from csvmusic.core.youtube_session import validate_cookie_file
-				self.sig_done.emit(*validate_cookie_file(self.cookies_file))
-				return
-			yt = self.yt_dlp_path or _resolve_ytdlp()
-			# Firefox profile pre-check: if a concrete profile path is provided, verify cookies DB exists
-			ff_signed_in_hint = None
-			if self.cookies_browser:
-				parts = str(self.cookies_browser).split(":", 1)
-				bid = parts[0].strip().lower()
-				prof = parts[1].strip() if len(parts) == 2 else None
-				if bid == "firefox" and prof:
-					try:
-						db = pathlib.Path(prof) / "cookies.sqlite"
-						if not db.exists():
-							self.sig_done.emit(False, "Firefox cookies DB not found for selected profile.")
-							return
-						conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
-						cur = conn.cursor()
-						cur.execute(
-							"SELECT name FROM moz_cookies WHERE (host LIKE '%youtube.com' OR host LIKE '%google.com') AND name IN (?,?,?,?,?,?,?) LIMIT 1",
-							("__Secure-3PSID","__Secure-1PSID","SAPISID","APISID","SID","SSID","HSID")
-						)
-						ff_signed_in_hint = cur.fetchone() is not None
-						conn.close()
-					except Exception:
-						# Ignore DB probing errors; continue with yt-dlp probing
-						pass
-			cmd = [yt]
-			if self.cookies_file:
-				cmd += ["--cookies", self.cookies_file]
-			elif self.cookies_browser:
-				cmd += ["--cookies-from-browser", self.cookies_browser]
-			# Use YouTube homepage extraction to trigger cookie loading without requiring media formats.
-			cmd += ["--skip-download", "--flat-playlist", "--playlist-items", "0", "https://www.youtube.com/"]
-			proc = _run_yt_dlp_command(cmd, timeout=12)
-			if proc.returncode == 0:
-				# Even on success, detect cookie DB issues from logs
-				stderr = (proc.stderr or ""); stdout = (proc.stdout or "")
-				low_all = (stderr + " \n" + stdout).lower()
-				if ("cookie" in low_all) and ("could not" in low_all or "not find" in low_all or "no such file" in low_all):
-					self.sig_done.emit(False, "Could not find cookies in database. Check profile selection.")
-					return
-				# Determine signed-in state
-				signed_in = False
-				account_hint = None
-				# No account name probing; keep it lightweight
-				if self.cookies_file:
-					try:
-						with open(self.cookies_file, "r", encoding="utf-8", errors="ignore") as f:
-							for line in f:
-								line = line.strip()
-								if not line or line.startswith("#"):
-									continue
-								parts = line.split("\t")
-								if len(parts) < 7:
-									continue
-								domain = parts[0].lower()
-								name = parts[5]
-								if ("youtube.com" in domain or "google.com" in domain) and name in {"__Secure-3PSID","__Secure-1PSID","SAPISID","APISID","SID","SSID","HSID"}:
-									signed_in = True
-									break
-					except Exception:
-						pass
-
-				else:
-					# For Firefox, prefer the DB hint result; otherwise do a lightweight probe
-					if ff_signed_in_hint is not None:
-						signed_in = bool(ff_signed_in_hint)
-					else:
-						signed_in = "found youtube account cookies" in low_all
-				msg = "Signed-in cookies detected" if signed_in else "Guest session (no account cookies)"
-				self.sig_done.emit(signed_in, msg)
-				return
-			stderr = (proc.stderr or "")
-			low = stderr.lower()
-			if self.cookies_browser and ff_signed_in_hint is True and "signature solving failed" in low:
-				self.sig_done.emit(True, "Signed-in cookies detected. YouTube signature warnings may still affect some videos.")
-				return
-			if ("could not copy" in low and "cookie" in low) or ("locked" in low and "cookie" in low):
-				self.sig_done.emit(False, "Cookie DB locked. Close browser and retry.")
-				return
-			if "dpapi" in low or "cryptprotectdata" in low:
-				self.sig_done.emit(False, "DPAPI decryption error. Use same Windows user.")
-				return
-			self.sig_done.emit(False, stderr.strip()[:160] or "Cookie test failed.")
-		except subprocess.TimeoutExpired:
-			self.sig_done.emit(False, "Cookie test timeout.")
-		except Exception as e:
-			self.sig_done.emit(False, str(e)[:160])

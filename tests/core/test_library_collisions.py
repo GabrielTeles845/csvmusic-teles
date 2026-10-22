@@ -77,7 +77,7 @@ def test_unprefixed_fallback_is_refused_when_another_song_has_the_same_name(tmp_
 
 
 def test_download_queue_does_not_skip_a_song_because_its_namesake_has_a_file(tmp_path):
-	from csvmusic.ui.library_mode import _pending_download_tracks
+	from csvmusic.engine.workers import pending_download_tracks as _pending_download_tracks
 
 	folder = tmp_path / "Rock"
 	folder.mkdir()

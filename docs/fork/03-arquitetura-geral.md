@@ -88,7 +88,7 @@ Tudo isso roda dentro de uma `QThread` (`PipelineWorker`, `ui/workers.py:143`), 
 | `youtube_login.py`, `youtube_popup.py` | 105 / 164 | login no YouTube |
 | `theme.py` | 84 | tema retrô, fonte Comic |
 
-> Desde 22/10/2026 a janela principal é a interface web (doc 14). `library_mode.py`, `main_window.py`, `device_sync.py`, `theme.py` e `spotify_api_test.py` só continuam no repositório até a tela nova ser conferida; o app novo não importa nenhum deles.
+> Desde 22/10/2026 a janela principal é a interface web (doc 14). `library_mode.py`, `main_window.py`, `device_sync.py`, `theme.py`, `spotify_api_test.py`, `library_mode_ui.py`, `spotify_api_test_ui.py`, `core/config.py`, `core/models.py`, `core/url_import.py` e as fontes Comic Neue/VCR foram **removidos** no mesmo dia, depois de a tela nova ser conferida com dados reais. A tabela acima descreve o código original, para consulta no histórico do git.
 
 ### `csvmusic/engine/` e `csvmusic/web/` — interface nova (doc 14)
 | Arquivo | O que faz |

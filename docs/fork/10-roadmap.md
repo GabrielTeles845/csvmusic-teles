@@ -172,13 +172,15 @@ Cada item é pequeno e independente. Faça **um commit por item**.
 
 ## Fase 6 — Motor separado da interface + linha de comando (3–5 dias)
 
-- [ ] 6.1 Pacote `csvmusic/engine/` com API e eventos; UI só assina eventos (`09 A2`)
+- [x] 6.1 Pacote `csvmusic/engine/` com API e eventos; UI só assina eventos (`09 A2`) — feito em 22/10/2026 junto com a interface web (doc 14)
 - [ ] 6.2 CLI: `csvmusic sync <link|csv>`, `csvmusic sync --library`, `csvmusic status` (`09 A3`) — os mini-CLIs existentes (`download_csv.py` etc.) são ponto de partida
 - [ ] 6.3 Instância única + trava da biblioteca (`07 §6.1`)
 
 ---
 
 ## Fase 7 — Redesign + idiomas (1–3 semanas)
+
+> **22/10/2026:** o redesign virou a interface web (doc 14, direção "Capa ambiente", toda em português): cobre 7.2 (tokens, claro/escuro, seguir o sistema), 7.3 (janela nativa com menu do Mac; modo legado e Library Mode removidos), 7.4 (lista virtual, sem "Load More"), 7.5 (ícones Lucide, fonte Figtree) e 7.8 (barra de download com previsão). Ficam abertos 7.1, 7.6 e 7.7 (só pt-BR por enquanto).
 
 - [ ] 7.1 Estados como enum (pré-requisito) (`06 §4.2 passo 0`)
 - [ ] 7.2 Design system: tokens, QSS único, temas Claro/Escuro/Clássico, seguir o sistema (`06 §3 opção A`)

@@ -113,7 +113,7 @@ def test_dry_run_writes_nothing(tmp_path):
 def test_running_app_detection():
 	lines = [
 		"100 /opt/homebrew/bin/python3.12 -m csvmusic.app",
-		"101 python -m csvmusic.library_mode_ui",
+		"101 python -m csvmusic",
 		"102 /Applications/CSVMusic.app/Contents/MacOS/CSVMusic",
 		"103 python -m csvmusic.tools.fill_durations --csv x.csv",
 		"104 python -m pytest tests/core/test_apple_music_import.py",

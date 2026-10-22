@@ -35,7 +35,6 @@ csvmusic = [
 	"../resources/deno/darwin/deno",
 	"../resources/deno/linux/deno",
 	"../resources/deno/windows/deno.exe",
-	"../resources/fonts/*",
 	"../licenses/*"
 ]
 

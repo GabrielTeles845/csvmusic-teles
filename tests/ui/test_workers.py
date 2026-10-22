@@ -441,39 +441,6 @@ def test_stop_signals_the_running_download():
 	assert worker._cancel.is_set()
 
 
-def test_closing_main_window_never_terminates_a_worker_thread():
-	from csvmusic.ui.main_window import MainWindow
-
-	class StuckThread:
-		def __init__(self):
-			self.calls = []
-
-		def stop(self):
-			self.calls.append("stop")
-
-		def requestInterruption(self):
-			pass
-
-		def quit(self):
-			pass
-
-		def isRunning(self):
-			return True
-
-		def wait(self, ms):
-			self.calls.append(("wait", ms))
-			return False
-
-		def terminate(self):
-			self.calls.append("terminate")
-
-	thread = StuckThread()
-	MainWindow._shutdown_thread(None, thread, wait_ms=10)
-
-	assert "stop" in thread.calls
-	assert "terminate" not in thread.calls
-
-
 def _duration_by_video(lengths: dict[str, float]):
 	"""Simulated mutagen: the staged file holds the URL it came from."""
 	def measure(path):

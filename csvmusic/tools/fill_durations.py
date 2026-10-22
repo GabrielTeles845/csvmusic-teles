@@ -27,8 +27,6 @@ from csvmusic.core.log import log
 _APP_MARKERS = (
 	"csvmusic.app",  # python -m csvmusic.app and /CSVMusic.app/Contents/MacOS/CSVMusic
 	"csvmusic/app.py",
-	"csvmusic.library_mode_ui",
-	"csvmusic/library_mode_ui.py",
 	"csvmusic.exe",
 	"csvmusic/__main__.py",
 )
