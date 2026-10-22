@@ -9,7 +9,7 @@ WINDOWS_FFMPEG = ROOT / 'resources' / 'ffmpeg' / 'windows' / 'ffmpeg.exe'
 APP_ICON = ROOT / 'resources' / 'app.ico'
 MAC_ICON = ROOT / 'resources' / 'app.icns'
 
-datas = [('resources', 'resources'), ('licenses', 'licenses')]
+datas = [('resources', 'resources'), ('licenses', 'licenses'), ('csvmusic/web/static', 'csvmusic/web/static')]
 binaries = []
 if WINDOWS_FFMPEG.exists():
     binaries.append((str(WINDOWS_FFMPEG), 'ffmpeg/windows'))

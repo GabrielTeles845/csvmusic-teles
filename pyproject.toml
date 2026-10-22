@@ -23,11 +23,12 @@ csvmusic = "csvmusic.app:main"
 [tool.setuptools]
 package-dir = {"" = "."}
 include-package-data = true
-packages = ["csvmusic", "csvmusic.core", "csvmusic.ui", "csvmusic.tools"]
+packages = ["csvmusic", "csvmusic.core", "csvmusic.ui", "csvmusic.tools", "csvmusic.engine", "csvmusic.web"]
 
 [tool.setuptools.package-data]
 csvmusic = [
 	"core/*.c",
+	"web/static/**/*",
 	"../resources/ffmpeg/darwin/ffmpeg",
 	"../resources/ffmpeg/linux/ffmpeg",
 	"../resources/ffmpeg/windows/ffmpeg.exe",
